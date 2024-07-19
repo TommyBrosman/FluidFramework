@@ -286,16 +286,34 @@ describe("EditManager - Bench", () => {
 							}
 
 							// Measure
+							const totalSubTimes = {
+								beforeFindTargetCommit: 0,
+								beforeIterateTargetPath: 0,
+								beforeDiscardPrefix: 0,
+								beforeFinishWithNoRebase: 0,
+								finishRebase: 0,
+							};
 							const before = state.timer.now();
 							for (let iChange = 0; iChange < count; iChange++) {
-								manager.addSequencedChange(
+								const result = manager.addSequencedChange(
 									sequencedEdits[iChange],
 									brand(iChange + 1),
 									brand(0),
 								);
+
+								const times = result?.times;
+								if (times !== undefined) {
+									totalSubTimes.beforeDiscardPrefix += times.beforeDiscardPrefix;
+									totalSubTimes.beforeFindTargetCommit += times.beforeFindTargetCommit;
+									totalSubTimes.beforeFinishWithNoRebase += times.beforeFinishWithNoRebase;
+									totalSubTimes.beforeIterateTargetPath += times.beforeIterateTargetPath;
+									totalSubTimes.finishRebase += times.finishRebase;
+								}
 							}
 							const after = state.timer.now();
 							duration = state.timer.toSeconds(before, after);
+							console.log(totalSubTimes);
+
 							// Collect data
 						} while (state.recordBatch(duration));
 					},

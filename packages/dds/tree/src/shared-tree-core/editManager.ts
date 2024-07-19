@@ -17,6 +17,7 @@ import {
 	mintCommit,
 	rebaseChange,
 	type RebaseStatsWithDuration,
+	type BranchRebaseResult,
 } from "../core/index.js";
 import { type Mutable, brand, fail, getOrCreate, mapIterable } from "../util/index.js";
 
@@ -579,7 +580,7 @@ export class EditManager<
 		newCommit: Commit<TChangeset>,
 		sequenceNumber: SeqNumber,
 		referenceSequenceNumber: SeqNumber,
-	): void {
+	): BranchRebaseResult<TChangeset> | undefined {
 		assert(
 			sequenceNumber > this.minimumSequenceNumber,
 			0x713 /* Expected change sequence number to exceed the last known minimum sequence number */,
@@ -649,7 +650,7 @@ export class EditManager<
 			});
 		}
 
-		this.localBranch.rebaseOnto(this.trunk);
+		return this.localBranch.rebaseOnto(this.trunk);
 	}
 
 	public findLocalCommit(

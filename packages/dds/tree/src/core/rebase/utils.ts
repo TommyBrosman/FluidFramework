@@ -100,6 +100,18 @@ export interface BranchRebaseResult<TChange> {
 	 * Telemetry properties for the rebase operation.
 	 */
 	readonly telemetryProperties: RebaseStats;
+	/**
+	 * Sub-operation timing data.
+	 */
+	readonly times: RebaseOperationTiming;
+}
+
+export interface RebaseOperationTiming {
+	beforeFindTargetCommit: number;
+	beforeIterateTargetPath: number;
+	beforeDiscardPrefix: number;
+	beforeFinishWithNoRebase: number;
+	finishRebase: number;
 }
 
 interface RebaseChangeResult<TChange> {
@@ -191,6 +203,7 @@ export function rebaseBranch<TChange>(
 	targetCommit: GraphCommit<TChange>,
 	targetHead = targetCommit,
 ): BranchRebaseResult<TChange> {
+	const startTime = performance.now();
 	// Get both source and target as path arrays
 	const sourcePath: GraphCommit<TChange>[] = [];
 	const targetPath: GraphCommit<TChange>[] = [];
@@ -201,6 +214,7 @@ export function rebaseBranch<TChange>(
 
 	// Find where `targetCommit` is in the target branch
 	const targetCommitIndex = targetPath.findIndex((r) => r === targetCommit);
+	const beforeFindTargetCommitTime = performance.now();
 	if (targetCommitIndex === -1) {
 		// If the targetCommit is not in the target path, then it is either disjoint from `target` or it is behind/at
 		// the commit where source and target diverge (ancestor), in which case there is nothing more to rebase
@@ -209,6 +223,13 @@ export function rebaseBranch<TChange>(
 			findCommonAncestor(targetCommit, targetHead) !== undefined,
 			0x676 /* target commit is not in target branch */,
 		);
+		const times = {
+			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			beforeIterateTargetPath: 0,
+			beforeDiscardPrefix: 0,
+			beforeFinishWithNoRebase: 0,
+			finishRebase: 0,
+		};
 		return {
 			newSourceHead: sourceHead,
 			sourceChange: undefined,
@@ -218,8 +239,11 @@ export function rebaseBranch<TChange>(
 				rebaseDistance: targetCommitIndex + 1,
 				countDropped: 0,
 			},
+			times,
 		};
 	}
+
+	const beforeIterateTargetPathTime = performance.now();
 
 	// Iterate through the target path and look for commits that are also present on the source branch (i.e. they
 	// have matching tags). Each commit found in the target branch can be skipped when processing the source branch
@@ -237,6 +261,8 @@ export function rebaseBranch<TChange>(
 			break;
 		}
 	}
+
+	const beforeDiscardPrefixTime = performance.now();
 
 	/** The commit on the target branch that the new source branch branches off of (i.e. the new common ancestor) */
 	const newBase = targetPath[newBaseIndex];
@@ -256,6 +282,7 @@ export function rebaseBranch<TChange>(
 	}
 
 	const sourceCommits: GraphCommit<TChange>[] = [];
+	const beforeFinishWithNoRebaseTime = performance.now();
 
 	// If all commits that are about to be rebased over on the target branch already comprise the start of the source branch,
 	// are in the same order, and have no other commits interleaving them, then no rebasing needs to occur. Those commits can
@@ -265,6 +292,13 @@ export function rebaseBranch<TChange>(
 		for (const c of sourcePath) {
 			sourceCommits.push(mintCommit(sourceCommits[sourceCommits.length - 1] ?? newBase, c));
 		}
+		const times = {
+			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
+			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
+			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
+			finishRebase: 0,
+		};
 		return {
 			newSourceHead: sourceCommits[sourceCommits.length - 1] ?? newBase,
 			sourceChange: undefined,
@@ -278,6 +312,7 @@ export function rebaseBranch<TChange>(
 				rebaseDistance: targetCommits.length,
 				countDropped: sourceBranchLength - sourceSet.size,
 			},
+			times,
 		};
 	}
 
@@ -308,6 +343,7 @@ export function rebaseBranch<TChange>(
 	}
 
 	let netChange: TChange | undefined;
+	const finishRebaseTime = performance.now();
 	return {
 		newSourceHead: newHead,
 		get sourceChange(): TChange | undefined {
@@ -325,6 +361,13 @@ export function rebaseBranch<TChange>(
 			sourceBranchLength,
 			rebaseDistance: targetCommits.length,
 			countDropped: sourceBranchLength - sourceSet.size,
+		},
+		times: {
+			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
+			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
+			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
+			finishRebase: finishRebaseTime - beforeFinishWithNoRebaseTime,
 		},
 	};
 }
