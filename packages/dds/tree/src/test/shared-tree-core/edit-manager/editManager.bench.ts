@@ -265,6 +265,15 @@ describe("EditManager - Bench", () => {
 					title: `Process the sequencing of ${count} local commits`,
 					benchmarkFnCustom: async <T>(state: BenchmarkTimer<T>) => {
 						let duration: number;
+						const totalSubTimes = {
+							afterFirstFca: 0,
+							beforeFindTargetCommit: 0,
+							beforeIterateTargetPath: 0,
+							beforeDiscardPrefix: 0,
+							beforeFinishWithNoRebase: 0,
+							finishRebase: 0,
+						};
+						let iterationCount: number = 0;
 						do {
 							// Since this setup one collects data from one iteration, assert that this is what is expected.
 							assert.equal(state.iterationsPerBatch, 1);
@@ -286,13 +295,6 @@ describe("EditManager - Bench", () => {
 							}
 
 							// Measure
-							const totalSubTimes = {
-								beforeFindTargetCommit: 0,
-								beforeIterateTargetPath: 0,
-								beforeDiscardPrefix: 0,
-								beforeFinishWithNoRebase: 0,
-								finishRebase: 0,
-							};
 							const before = state.timer.now();
 							for (let iChange = 0; iChange < count; iChange++) {
 								const result = manager.addSequencedChange(
@@ -303,19 +305,29 @@ describe("EditManager - Bench", () => {
 
 								const times = result?.times;
 								if (times !== undefined) {
+									totalSubTimes.afterFirstFca += times.afterFirstFca;
 									totalSubTimes.beforeDiscardPrefix += times.beforeDiscardPrefix;
 									totalSubTimes.beforeFindTargetCommit += times.beforeFindTargetCommit;
 									totalSubTimes.beforeFinishWithNoRebase += times.beforeFinishWithNoRebase;
 									totalSubTimes.beforeIterateTargetPath += times.beforeIterateTargetPath;
 									totalSubTimes.finishRebase += times.finishRebase;
+									iterationCount++;
 								}
 							}
 							const after = state.timer.now();
 							duration = state.timer.toSeconds(before, after);
-							console.log(totalSubTimes);
 
 							// Collect data
 						} while (state.recordBatch(duration));
+
+						totalSubTimes.afterFirstFca /= duration;
+						totalSubTimes.beforeDiscardPrefix /= duration;
+						totalSubTimes.beforeFindTargetCommit /= duration;
+						totalSubTimes.beforeFinishWithNoRebase /= duration;
+						totalSubTimes.beforeIterateTargetPath /= duration;
+						totalSubTimes.finishRebase /= duration;
+
+						console.log(totalSubTimes);
 					},
 					// Force batch size of 1
 					minBatchDurationSeconds: 0,

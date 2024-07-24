@@ -107,6 +107,7 @@ export interface BranchRebaseResult<TChange> {
 }
 
 export interface RebaseOperationTiming {
+	afterFirstFca: number;
 	beforeFindTargetCommit: number;
 	beforeIterateTargetPath: number;
 	beforeDiscardPrefix: number;
@@ -208,6 +209,7 @@ export function rebaseBranch<TChange>(
 	const sourcePath: GraphCommit<TChange>[] = [];
 	const targetPath: GraphCommit<TChange>[] = [];
 	const ancestor = findCommonAncestor([sourceHead, sourcePath], [targetHead, targetPath]);
+	const afterFirstFcaTime = performance.now();
 	assert(ancestor !== undefined, 0x675 /* branches must be related */);
 
 	const sourceBranchLength = sourcePath.length;
@@ -224,7 +226,8 @@ export function rebaseBranch<TChange>(
 			0x676 /* target commit is not in target branch */,
 		);
 		const times = {
-			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			afterFirstFca: afterFirstFcaTime - startTime,
+			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
 			beforeIterateTargetPath: 0,
 			beforeDiscardPrefix: 0,
 			beforeFinishWithNoRebase: 0,
@@ -293,7 +296,8 @@ export function rebaseBranch<TChange>(
 			sourceCommits.push(mintCommit(sourceCommits[sourceCommits.length - 1] ?? newBase, c));
 		}
 		const times = {
-			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			afterFirstFca: afterFirstFcaTime - startTime,
+			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
 			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
 			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
 			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
@@ -363,7 +367,8 @@ export function rebaseBranch<TChange>(
 			countDropped: sourceBranchLength - sourceSet.size,
 		},
 		times: {
-			beforeFindTargetCommit: beforeFindTargetCommitTime - startTime,
+			afterFirstFca: afterFirstFcaTime - startTime,
+			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
 			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
 			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
 			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
