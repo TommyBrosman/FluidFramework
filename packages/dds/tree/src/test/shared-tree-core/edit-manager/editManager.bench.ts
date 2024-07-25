@@ -266,12 +266,14 @@ describe("EditManager - Bench", () => {
 					benchmarkFnCustom: async <T>(state: BenchmarkTimer<T>) => {
 						let duration: number;
 						const totalSubTimes = {
-							afterFirstFca: 0,
-							beforeFindTargetCommit: 0,
-							beforeIterateTargetPath: 0,
-							beforeDiscardPrefix: 0,
-							beforeFinishWithNoRebase: 0,
-							finishRebase: 0,
+							fcaWork: 0,
+							firstFcaDuration: 0,
+							afterFirstFcaDuration: 0,
+							beforeFindTargetCommitDuration: 0,
+							beforeIterateTargetPathDuration: 0,
+							beforeDiscardPrefixDuration: 0,
+							beforeFinishWithNoRebaseDuration: 0,
+							finishRebaseDuration: 0,
 						};
 						let iterationCount: number = 0;
 						do {
@@ -305,12 +307,17 @@ describe("EditManager - Bench", () => {
 
 								const times = result?.times;
 								if (times !== undefined) {
-									totalSubTimes.afterFirstFca += times.afterFirstFca;
-									totalSubTimes.beforeDiscardPrefix += times.beforeDiscardPrefix;
-									totalSubTimes.beforeFindTargetCommit += times.beforeFindTargetCommit;
-									totalSubTimes.beforeFinishWithNoRebase += times.beforeFinishWithNoRebase;
-									totalSubTimes.beforeIterateTargetPath += times.beforeIterateTargetPath;
-									totalSubTimes.finishRebase += times.finishRebase;
+									totalSubTimes.fcaWork += times.fcaWork;
+									totalSubTimes.afterFirstFcaDuration += times.afterFirstFcaDuration;
+									totalSubTimes.beforeDiscardPrefixDuration +=
+										times.beforeDiscardPrefixDuration;
+									totalSubTimes.beforeFindTargetCommitDuration +=
+										times.beforeFindTargetCommitDuration;
+									totalSubTimes.beforeFinishWithNoRebaseDuration +=
+										times.beforeFinishWithNoRebaseDuration;
+									totalSubTimes.beforeIterateTargetPathDuration +=
+										times.beforeIterateTargetPathDuration;
+									totalSubTimes.finishRebaseDuration += times.finishRebaseDuration;
 									iterationCount++;
 								}
 							}
@@ -320,12 +327,13 @@ describe("EditManager - Bench", () => {
 							// Collect data
 						} while (state.recordBatch(duration));
 
-						totalSubTimes.afterFirstFca /= duration;
-						totalSubTimes.beforeDiscardPrefix /= duration;
-						totalSubTimes.beforeFindTargetCommit /= duration;
-						totalSubTimes.beforeFinishWithNoRebase /= duration;
-						totalSubTimes.beforeIterateTargetPath /= duration;
-						totalSubTimes.finishRebase /= duration;
+						totalSubTimes.fcaWork /= iterationCount;
+						totalSubTimes.afterFirstFcaDuration /= iterationCount;
+						totalSubTimes.beforeDiscardPrefixDuration /= iterationCount;
+						totalSubTimes.beforeFindTargetCommitDuration /= iterationCount;
+						totalSubTimes.beforeFinishWithNoRebaseDuration /= iterationCount;
+						totalSubTimes.beforeIterateTargetPathDuration /= iterationCount;
+						totalSubTimes.finishRebaseDuration /= iterationCount;
 
 						console.log(totalSubTimes);
 					},

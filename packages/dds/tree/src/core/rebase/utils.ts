@@ -107,12 +107,14 @@ export interface BranchRebaseResult<TChange> {
 }
 
 export interface RebaseOperationTiming {
-	afterFirstFca: number;
-	beforeFindTargetCommit: number;
-	beforeIterateTargetPath: number;
-	beforeDiscardPrefix: number;
-	beforeFinishWithNoRebase: number;
-	finishRebase: number;
+	fcaWork: number;
+	firstFcaDuration: number;
+	afterFirstFcaDuration: number;
+	beforeFindTargetCommitDuration: number;
+	beforeIterateTargetPathDuration: number;
+	beforeDiscardPrefixDuration: number;
+	beforeFinishWithNoRebaseDuration: number;
+	finishRebaseDuration: number;
 }
 
 interface RebaseChangeResult<TChange> {
@@ -204,19 +206,33 @@ export function rebaseBranch<TChange>(
 	targetCommit: GraphCommit<TChange>,
 	targetHead = targetCommit,
 ): BranchRebaseResult<TChange> {
-	const startTime = performance.now();
+	const startTime = performance.now() / 1000;
 	// Get both source and target as path arrays
 	const sourcePath: GraphCommit<TChange>[] = [];
 	const targetPath: GraphCommit<TChange>[] = [];
-	const ancestor = findCommonAncestor([sourceHead, sourcePath], [targetHead, targetPath]);
-	const afterFirstFcaTime = performance.now();
+	let firstFcaWork: number = 0;
+	let firstFcaDuration: number = 0;
+	const workTracker = {
+		incrementWork: (): void => {
+			firstFcaWork += 1;
+		},
+		markDuration: (duration: number): void => {
+			firstFcaDuration = duration;
+		},
+	};
+	const ancestor = findCommonAncestor(
+		[sourceHead, sourcePath],
+		[targetHead, targetPath],
+		workTracker,
+	);
+	const afterFirstFcaTime = performance.now() / 1000;
 	assert(ancestor !== undefined, 0x675 /* branches must be related */);
 
 	const sourceBranchLength = sourcePath.length;
 
 	// Find where `targetCommit` is in the target branch
 	const targetCommitIndex = targetPath.findIndex((r) => r === targetCommit);
-	const beforeFindTargetCommitTime = performance.now();
+	const beforeFindTargetCommitTime = performance.now() / 1000;
 	if (targetCommitIndex === -1) {
 		// If the targetCommit is not in the target path, then it is either disjoint from `target` or it is behind/at
 		// the commit where source and target diverge (ancestor), in which case there is nothing more to rebase
@@ -226,12 +242,14 @@ export function rebaseBranch<TChange>(
 			0x676 /* target commit is not in target branch */,
 		);
 		const times = {
-			afterFirstFca: afterFirstFcaTime - startTime,
-			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
-			beforeIterateTargetPath: 0,
-			beforeDiscardPrefix: 0,
-			beforeFinishWithNoRebase: 0,
-			finishRebase: 0,
+			fcaWork: firstFcaWork,
+			firstFcaDuration,
+			afterFirstFcaDuration: afterFirstFcaTime - startTime,
+			beforeFindTargetCommitDuration: beforeFindTargetCommitTime - afterFirstFcaTime,
+			beforeIterateTargetPathDuration: 0,
+			beforeDiscardPrefixDuration: 0,
+			beforeFinishWithNoRebaseDuration: 0,
+			finishRebaseDuration: 0,
 		};
 		return {
 			newSourceHead: sourceHead,
@@ -246,7 +264,7 @@ export function rebaseBranch<TChange>(
 		};
 	}
 
-	const beforeIterateTargetPathTime = performance.now();
+	const beforeIterateTargetPathTime = performance.now() / 1000;
 
 	// Iterate through the target path and look for commits that are also present on the source branch (i.e. they
 	// have matching tags). Each commit found in the target branch can be skipped when processing the source branch
@@ -265,7 +283,7 @@ export function rebaseBranch<TChange>(
 		}
 	}
 
-	const beforeDiscardPrefixTime = performance.now();
+	const beforeDiscardPrefixTime = performance.now() / 1000;
 
 	/** The commit on the target branch that the new source branch branches off of (i.e. the new common ancestor) */
 	const newBase = targetPath[newBaseIndex];
@@ -285,7 +303,7 @@ export function rebaseBranch<TChange>(
 	}
 
 	const sourceCommits: GraphCommit<TChange>[] = [];
-	const beforeFinishWithNoRebaseTime = performance.now();
+	const beforeFinishWithNoRebaseTime = performance.now() / 1000;
 
 	// If all commits that are about to be rebased over on the target branch already comprise the start of the source branch,
 	// are in the same order, and have no other commits interleaving them, then no rebasing needs to occur. Those commits can
@@ -296,12 +314,15 @@ export function rebaseBranch<TChange>(
 			sourceCommits.push(mintCommit(sourceCommits[sourceCommits.length - 1] ?? newBase, c));
 		}
 		const times = {
-			afterFirstFca: afterFirstFcaTime - startTime,
-			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
-			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
-			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
-			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
-			finishRebase: 0,
+			fcaWork: firstFcaWork,
+			firstFcaDuration,
+			afterFirstFcaDuration: afterFirstFcaTime - startTime,
+			beforeFindTargetCommitDuration: beforeFindTargetCommitTime - afterFirstFcaTime,
+			beforeIterateTargetPathDuration:
+				beforeIterateTargetPathTime - beforeFindTargetCommitTime,
+			beforeDiscardPrefixDuration: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
+			beforeFinishWithNoRebaseDuration: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
+			finishRebaseDuration: 0,
 		};
 		return {
 			newSourceHead: sourceCommits[sourceCommits.length - 1] ?? newBase,
@@ -347,7 +368,7 @@ export function rebaseBranch<TChange>(
 	}
 
 	let netChange: TChange | undefined;
-	const finishRebaseTime = performance.now();
+	const finishRebaseTime = performance.now() / 1000;
 	return {
 		newSourceHead: newHead,
 		get sourceChange(): TChange | undefined {
@@ -367,12 +388,15 @@ export function rebaseBranch<TChange>(
 			countDropped: sourceBranchLength - sourceSet.size,
 		},
 		times: {
-			afterFirstFca: afterFirstFcaTime - startTime,
-			beforeFindTargetCommit: beforeFindTargetCommitTime - afterFirstFcaTime,
-			beforeIterateTargetPath: beforeIterateTargetPathTime - beforeFindTargetCommitTime,
-			beforeDiscardPrefix: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
-			beforeFinishWithNoRebase: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
-			finishRebase: finishRebaseTime - beforeFinishWithNoRebaseTime,
+			fcaWork: firstFcaWork,
+			firstFcaDuration,
+			afterFirstFcaDuration: afterFirstFcaTime - startTime,
+			beforeFindTargetCommitDuration: beforeFindTargetCommitTime - afterFirstFcaTime,
+			beforeIterateTargetPathDuration:
+				beforeIterateTargetPathTime - beforeFindTargetCommitTime,
+			beforeDiscardPrefixDuration: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
+			beforeFinishWithNoRebaseDuration: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
+			finishRebaseDuration: finishRebaseTime - beforeFinishWithNoRebaseTime,
 		},
 	};
 }
@@ -602,7 +626,10 @@ export function findAncestor<T extends { parent?: T }>(
 export function findCommonAncestor<T extends { parent?: T }>(
 	descendantA: T | [descendantA: T, path?: T[]] | undefined,
 	descendantB: T | [descendantB: T, path?: T[]] | undefined,
+	workTracker?: { incrementWork(): void; markDuration(duration: number): void },
 ): T | undefined {
+	const start = performance.now() / 1000;
+	workTracker?.incrementWork();
 	let a: T | undefined;
 	let b: T | undefined;
 	let pathA: T[] | undefined;
@@ -621,6 +648,7 @@ export function findCommonAncestor<T extends { parent?: T }>(
 	}
 
 	if (a === b) {
+		workTracker?.markDuration(performance.now() / 1000 - start);
 		return a;
 	}
 
@@ -631,12 +659,14 @@ export function findCommonAncestor<T extends { parent?: T }>(
 
 	const visited = new Set();
 	while (a !== undefined || b !== undefined) {
+		workTracker?.incrementWork();
 		if (a !== undefined) {
 			if (visited.has(a)) {
 				if (pathB !== undefined) {
 					pathB.length = pathB.findIndex((r) => Object.is(r, a));
 				}
 				reversePaths();
+				workTracker?.markDuration(performance.now() / 1000 - start);
 				return a;
 			}
 			visited.add(a);
@@ -650,6 +680,7 @@ export function findCommonAncestor<T extends { parent?: T }>(
 					pathA.length = pathA.findIndex((r) => Object.is(r, b));
 				}
 				reversePaths();
+				workTracker?.markDuration(performance.now() / 1000 - start);
 				return b;
 			}
 			visited.add(b);
@@ -664,5 +695,6 @@ export function findCommonAncestor<T extends { parent?: T }>(
 	if (pathB !== undefined) {
 		pathB.length = 0;
 	}
+	workTracker?.markDuration(performance.now() / 1000 - start);
 	return undefined;
 }
