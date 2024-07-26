@@ -256,6 +256,12 @@ export function rebaseBranch<TChange>(
 			finishRebaseDuration: 0,
 			totalInnerDuration: beforeFindTargetCommitTime - startTime,
 		};
+		performance.measure("afterFirstFca", { start: startTime, end: afterFirstFcaTime });
+		performance.measure("beforeFindTargetCommit", {
+			start: afterFirstFcaTime,
+			end: beforeFindTargetCommitTime,
+		});
+		performance.measure("totalInner", { start: startTime, end: beforeFindTargetCommitTime });
 		return {
 			newSourceHead: sourceHead,
 			sourceChange: undefined,
@@ -330,6 +336,24 @@ export function rebaseBranch<TChange>(
 			finishRebaseDuration: 0,
 			totalInnerDuration: beforeFinishWithNoRebaseTime - startTime,
 		};
+		performance.measure("afterFirstFca", { start: startTime, end: afterFirstFcaTime });
+		performance.measure("beforeFindTargetCommit", {
+			start: afterFirstFcaTime,
+			end: beforeFindTargetCommitTime,
+		});
+		performance.measure("beforeIterateTargetPath", {
+			start: beforeFindTargetCommitTime,
+			end: beforeIterateTargetPathTime,
+		});
+		performance.measure("beforeDiscardPrefix", {
+			start: beforeIterateTargetPathTime,
+			end: beforeDiscardPrefixTime,
+		});
+		performance.measure("beforeFinishWithNoRebase", {
+			start: beforeDiscardPrefixTime,
+			end: beforeFinishWithNoRebaseTime,
+		});
+		performance.measure("totalInner", { start: startTime, end: beforeFindTargetCommitTime });
 		return {
 			newSourceHead: sourceCommits[sourceCommits.length - 1] ?? newBase,
 			sourceChange: undefined,
@@ -375,6 +399,29 @@ export function rebaseBranch<TChange>(
 
 	let netChange: TChange | undefined;
 	const finishRebaseTime = performance.now();
+
+	performance.measure("afterFirstFca", { start: startTime, end: afterFirstFcaTime });
+	performance.measure("beforeFindTargetCommit", {
+		start: afterFirstFcaTime,
+		end: beforeFindTargetCommitTime,
+	});
+	performance.measure("beforeIterateTargetPath", {
+		start: beforeFindTargetCommitTime,
+		end: beforeIterateTargetPathTime,
+	});
+	performance.measure("beforeDiscardPrefix", {
+		start: beforeIterateTargetPathTime,
+		end: beforeDiscardPrefixTime,
+	});
+	performance.measure("beforeFinishWithNoRebase", {
+		start: beforeDiscardPrefixTime,
+		end: beforeFinishWithNoRebaseTime,
+	});
+	performance.measure("finishRebase", {
+		start: beforeFinishWithNoRebaseTime,
+		end: finishRebaseTime,
+	});
+	performance.measure("totalInner", { start: startTime, end: beforeFindTargetCommitTime });
 	return {
 		newSourceHead: newHead,
 		get sourceChange(): TChange | undefined {
