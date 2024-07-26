@@ -115,6 +115,7 @@ export interface RebaseOperationTiming {
 	beforeDiscardPrefixDuration: number;
 	beforeFinishWithNoRebaseDuration: number;
 	finishRebaseDuration: number;
+	totalInnerDuration: number;
 }
 
 interface RebaseChangeResult<TChange> {
@@ -250,6 +251,7 @@ export function rebaseBranch<TChange>(
 			beforeDiscardPrefixDuration: 0,
 			beforeFinishWithNoRebaseDuration: 0,
 			finishRebaseDuration: 0,
+			totalInnerDuration: beforeFindTargetCommitTime - startTime,
 		};
 		return {
 			newSourceHead: sourceHead,
@@ -323,6 +325,7 @@ export function rebaseBranch<TChange>(
 			beforeDiscardPrefixDuration: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
 			beforeFinishWithNoRebaseDuration: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
 			finishRebaseDuration: 0,
+			totalInnerDuration: beforeFinishWithNoRebaseTime - startTime,
 		};
 		return {
 			newSourceHead: sourceCommits[sourceCommits.length - 1] ?? newBase,
@@ -397,6 +400,7 @@ export function rebaseBranch<TChange>(
 			beforeDiscardPrefixDuration: beforeDiscardPrefixTime - beforeIterateTargetPathTime,
 			beforeFinishWithNoRebaseDuration: beforeFinishWithNoRebaseTime - beforeDiscardPrefixTime,
 			finishRebaseDuration: finishRebaseTime - beforeFinishWithNoRebaseTime,
+			totalInnerDuration: finishRebaseTime - startTime,
 		},
 	};
 }

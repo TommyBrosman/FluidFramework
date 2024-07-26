@@ -275,6 +275,7 @@ describe("EditManager - Bench", () => {
 							beforeDiscardPrefixDuration: 0,
 							beforeFinishWithNoRebaseDuration: 0,
 							finishRebaseDuration: 0,
+							totalInnerDuration: 0,
 						};
 						let iterationCount: number = 0;
 						do {
@@ -319,6 +320,7 @@ describe("EditManager - Bench", () => {
 									totalSubTimes.beforeIterateTargetPathDuration +=
 										times.beforeIterateTargetPathDuration;
 									totalSubTimes.finishRebaseDuration += times.finishRebaseDuration;
+									totalSubTimes.totalInnerDuration += times.totalInnerDuration;
 									iterationCount++;
 								}
 							}
@@ -337,6 +339,7 @@ describe("EditManager - Bench", () => {
 						totalSubTimes.beforeFinishWithNoRebaseDuration /= iterationCount;
 						totalSubTimes.beforeIterateTargetPathDuration /= iterationCount;
 						totalSubTimes.finishRebaseDuration /= iterationCount;
+						totalSubTimes.totalInnerDuration /= iterationCount;
 
 						console.log(totalSubTimes);
 
