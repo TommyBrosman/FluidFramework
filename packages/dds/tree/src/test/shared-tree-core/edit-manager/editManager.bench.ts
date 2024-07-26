@@ -265,6 +265,7 @@ describe("EditManager - Bench", () => {
 					title: `Process the sequencing of ${count} local commits`,
 					benchmarkFnCustom: async <T>(state: BenchmarkTimer<T>) => {
 						let duration: number;
+						let totalDuration: number = 0;
 						const totalSubTimes = {
 							fcaWork: 0,
 							firstFcaDuration: 0,
@@ -324,6 +325,8 @@ describe("EditManager - Bench", () => {
 							const after = state.timer.now();
 							duration = state.timer.toSeconds(before, after);
 
+							totalDuration += duration;
+
 							// Collect data
 						} while (state.recordBatch(duration));
 
@@ -336,6 +339,9 @@ describe("EditManager - Bench", () => {
 						totalSubTimes.finishRebaseDuration /= iterationCount;
 
 						console.log(totalSubTimes);
+
+						const totalDurationPerIteration = totalDuration / iterationCount;
+						console.log(totalDurationPerIteration);
 					},
 					// Force batch size of 1
 					minBatchDurationSeconds: 0,
