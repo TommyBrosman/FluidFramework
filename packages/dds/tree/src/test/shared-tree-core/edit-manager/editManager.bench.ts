@@ -332,14 +332,15 @@ describe("EditManager - Bench", () => {
 							// Collect data
 						} while (state.recordBatch(duration));
 
+						// Get per-iteration measurements and convert times to seconds
 						totalSubTimes.fcaWork /= iterationCount;
-						totalSubTimes.afterFirstFcaDuration /= iterationCount;
-						totalSubTimes.beforeDiscardPrefixDuration /= iterationCount;
-						totalSubTimes.beforeFindTargetCommitDuration /= iterationCount;
-						totalSubTimes.beforeFinishWithNoRebaseDuration /= iterationCount;
-						totalSubTimes.beforeIterateTargetPathDuration /= iterationCount;
-						totalSubTimes.finishRebaseDuration /= iterationCount;
-						totalSubTimes.totalInnerDuration /= iterationCount;
+						totalSubTimes.afterFirstFcaDuration /= iterationCount * 1000;
+						totalSubTimes.beforeDiscardPrefixDuration /= iterationCount * 1000;
+						totalSubTimes.beforeFindTargetCommitDuration /= iterationCount * 1000;
+						totalSubTimes.beforeFinishWithNoRebaseDuration /= iterationCount * 1000;
+						totalSubTimes.beforeIterateTargetPathDuration /= iterationCount * 1000;
+						totalSubTimes.finishRebaseDuration /= iterationCount * 1000;
+						totalSubTimes.totalInnerDuration /= iterationCount * 1000;
 
 						console.log(totalSubTimes);
 
