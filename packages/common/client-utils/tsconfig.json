@@ -5,6 +5,7 @@
 		"outDir": "./lib",
 		"baseUrl": ".",
 		"noUncheckedIndexedAccess": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 	"exclude": ["src/test/**/*"],
