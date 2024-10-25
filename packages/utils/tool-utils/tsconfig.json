@@ -5,7 +5,7 @@
 	"compilerOptions": {
 		"rootDir": "./src",
 		"outDir": "./lib",
-		"types": ["node"],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 }

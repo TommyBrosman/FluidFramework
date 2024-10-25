@@ -6,6 +6,7 @@
 		"types": ["mocha"],
 		"noUncheckedIndexedAccess": false,
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM", "DOM.Iterable"],
 	},
 	"include": ["./**/*"],
 	"references": [

@@ -5,6 +5,7 @@
 		"outDir": "../../lib/test",
 		"types": ["mocha", "node"],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM", "DOM.Iterable"],
 	},
 	"include": ["./**/*"],
 	"references": [

@@ -7320,7 +7320,7 @@ importers:
         version: 1.9.3
       '@fluid-tools/build-cli':
         specifier: ^0.49.0
-        version: 0.49.0(typescript@5.4.5)(webpack-cli@5.1.4)
+        version: 0.49.0(@types/node@18.19.54)(typescript@5.4.5)(webpack-cli@5.1.4)
       '@fluidframework/build-common':
         specifier: ^2.0.3
         version: 2.0.3
@@ -7336,6 +7336,9 @@ importers:
       '@microsoft/api-extractor':
         specifier: 7.47.8
         version: 7.47.8(patch_hash=ldzfpsbo3oeejrejk775zxplmi)(@types/node@18.19.54)
+      '@types/node':
+        specifier: ^18.19.0
+        version: 18.19.54
       concurrently:
         specifier: ^8.2.1
         version: 8.2.2
@@ -7501,7 +7504,7 @@ importers:
         version: 1.9.3
       '@fluid-tools/build-cli':
         specifier: ^0.49.0
-        version: 0.49.0(typescript@5.4.5)(webpack-cli@5.1.4)
+        version: 0.49.0(@types/node@18.19.54)(typescript@5.4.5)(webpack-cli@5.1.4)
       '@fluidframework/build-common':
         specifier: ^2.0.3
         version: 2.0.3
@@ -7517,6 +7520,9 @@ importers:
       '@microsoft/api-extractor':
         specifier: 7.47.8
         version: 7.47.8(patch_hash=ldzfpsbo3oeejrejk775zxplmi)(@types/node@18.19.54)
+      '@types/node':
+        specifier: ^18.19.0
+        version: 18.19.54
       concurrently:
         specifier: ^8.2.1
         version: 8.2.2
