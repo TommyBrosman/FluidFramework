@@ -3,6 +3,5 @@
 	"compilerOptions": {
 		"outDir": "./lib",
 		"module": "esnext",
-		"lib": ["ES2020", "DOM"],
 	},
 }
