@@ -3,7 +3,6 @@
  * Licensed under the MIT License.
  */
 
-import { performance } from "@fluid-internal/client-utils";
 import { ITelemetryLoggerExt } from "@fluidframework/telemetry-utils/internal";
 
 // ISequencedDocumentMessage

@@ -3,7 +3,6 @@
  * Licensed under the MIT License.
  */
 
-import { performance } from "@fluid-internal/client-utils";
 import {
 	type ITelemetryBaseEvent,
 	type ITelemetryBaseLogger,

@@ -5,6 +5,7 @@
 		"outDir": "./lib",
 		"types": ["jest"],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }

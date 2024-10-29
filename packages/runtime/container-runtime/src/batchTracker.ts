@@ -4,7 +4,6 @@
  */
 
 import type { EventEmitter } from "@fluid-internal/client-utils";
-import { performance } from "@fluid-internal/client-utils";
 import { ITelemetryBaseLogger } from "@fluidframework/core-interfaces";
 import { assert } from "@fluidframework/core-utils/internal";
 import { ISequencedDocumentMessage } from "@fluidframework/driver-definitions/internal";
