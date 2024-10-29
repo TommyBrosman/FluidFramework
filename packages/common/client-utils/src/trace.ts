@@ -3,8 +3,6 @@
  * Licensed under the MIT License.
  */
 
-import { performance } from "./performanceIsomorphic.js";
-
 /**
  * Helper class for tracing performance of events
  * Time measurements are in milliseconds as a floating point with a decimal
