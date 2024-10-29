@@ -19,7 +19,13 @@ export { performance } from "./performanceIsomorphic.js";
 export { fromBase64ToUtf8, fromUtf8ToBase64, toUtf8 } from "./base64EncodingNode.js";
 export { Uint8ArrayToArrayBuffer } from "./bufferShared.js";
 export { EventEmitter } from "./eventEmitter.cjs";
-export type { IsomorphicPerformance } from "./performanceIsomorphic.js";
+export {
+	type IsomorphicPerformance,
+	type MarkOptions,
+	type PerformanceMark,
+	type PerformanceMeasure,
+	type PerformanceEntry,
+} from "./performanceIsomorphic.js";
 export { type ITraceEvent, Trace } from "./trace.js";
 export {
 	type EventEmitterEventType,
