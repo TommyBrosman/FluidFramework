@@ -30,18 +30,15 @@ export interface PerformanceEntry {
 	/**
 	 * The total number of milliseconds elapsed for this entry. This value will not
 	 * be meaningful for all Performance Entry types.
-	 * @since v8.5.0
 	 */
 	readonly duration: number;
 	/**
 	 * The name of the performance entry.
-	 * @since v8.5.0
 	 */
 	readonly name: string;
 	/**
 	 * The high resolution millisecond timestamp marking the starting time of the
 	 * Performance Entry.
-	 * @since v8.5.0
 	 */
 	readonly startTime: number;
 	/**
@@ -54,7 +51,6 @@ export interface PerformanceEntry {
 	 * * `'function'` (Node.js only)
 	 * * `'http2'` (Node.js only)
 	 * * `'http'` (Node.js only)
-	 * @since v8.5.0
 	 */
 	readonly entryType: EntryType;
 }
@@ -91,7 +87,6 @@ export interface MarkOptions {
 	detail?: unknown | undefined;
 	/**
 	 * An optional timestamp to be used as the mark time.
-	 * @default `performance.now()`.
 	 */
 	startTime?: number | undefined;
 }
@@ -131,7 +126,7 @@ export interface IsomorphicPerformance {
 	 * @param name - The name.
 	 * @param startMark - The mark to start measuring from.
 	 * @param endMark - The mark to measure to.
-	 * @return The PerformanceMeasure entry that was created
+	 * @returns The PerformanceMeasure entry that was created
 	 */
 	measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
 	/**

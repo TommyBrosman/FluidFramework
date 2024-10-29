@@ -20,6 +20,7 @@ export { fromBase64ToUtf8, fromUtf8ToBase64, toUtf8 } from "./base64EncodingBrow
 export { Uint8ArrayToArrayBuffer } from "./bufferShared.js";
 export { EventEmitter } from "./eventEmitter.cjs";
 export {
+	type EntryType,
 	type IsomorphicPerformance,
 	type MarkOptions,
 	type PerformanceMark,
