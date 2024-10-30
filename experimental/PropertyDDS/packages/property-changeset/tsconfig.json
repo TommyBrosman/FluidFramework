@@ -6,6 +6,7 @@
 		"rootDir": "./src",
 		"outDir": "./lib",
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }

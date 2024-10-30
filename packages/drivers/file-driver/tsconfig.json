@@ -9,5 +9,6 @@
 		"noUnusedLocals": false,
 		"exactOptionalPropertyTypes": false,
 		"noUncheckedIndexedAccess": false,
+		"lib": ["ES2020", "DOM"],
 	},
 }

@@ -10,6 +10,7 @@
 		"noUnusedLocals": true,
 		"noImplicitOverride": true,
 		"exactOptionalPropertyTypes": true,
+		"lib": ["ES2020", "DOM"],
 	},
 	"references": [
 		{

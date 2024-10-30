@@ -13,6 +13,7 @@
 		],
 		"noUncheckedIndexedAccess": false,
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }

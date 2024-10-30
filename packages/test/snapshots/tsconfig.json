@@ -10,5 +10,6 @@
 		// TODO: this should be updated to use strict mode ASAP
 		"strict": false,
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 }

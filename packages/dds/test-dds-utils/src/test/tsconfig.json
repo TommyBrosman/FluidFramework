@@ -5,6 +5,7 @@
 		"outDir": "../../lib/test",
 		"types": ["mocha", "node"],
 		"noUncheckedIndexedAccess": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["./**/*"],
 	"references": [

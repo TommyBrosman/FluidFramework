@@ -1,7 +1,7 @@
 {
 	"extends": "../../../common/build/build-common/tsconfig.node16.json",
 	"compilerOptions": {
-		"lib": ["dom", "dom.iterable", "esnext"],
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
 		"allowJs": true,
 		"skipLibCheck": true,
 		"strict": true,

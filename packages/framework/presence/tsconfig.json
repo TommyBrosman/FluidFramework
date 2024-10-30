@@ -9,5 +9,6 @@
 		"noImplicitOverride": true,
 		"noUncheckedIndexedAccess": false,
 		"exactOptionalPropertyTypes": true,
+		"lib": ["ES2020", "DOM"],
 	},
 }

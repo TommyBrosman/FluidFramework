@@ -4,5 +4,6 @@
 	"compilerOptions": {
 		"rootDir": "./",
 		"types": ["jest"],
+		"lib": ["ES2020", "DOM"],
 	},
 }

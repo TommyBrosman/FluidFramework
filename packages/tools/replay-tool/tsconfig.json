@@ -8,5 +8,6 @@
 		"strict": false,
 		"types": ["node"],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 }
