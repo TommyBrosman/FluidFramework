@@ -133,6 +133,12 @@ export interface IsomorphicPerformance {
 	 * The current high resolution millisecond timestamp
 	 */
 	now(): number;
+	/**
+	 * Returns a list of `PerformanceEntry` objects in chronological order with respect to `performanceEntry.startTime`
+	 * whose `performanceEntry.entryType` is equal to `type`.
+	 * @param type - The type of performance entry objects.
+	 */
+	getEntriesByType(type: EntryType): PerformanceEntry[];
 }
 
 /**
