@@ -74,7 +74,10 @@ export class OdspTestTokenProvider implements IOdspTokenProvider {
 			throw new Error(`Failed to obtain tokens: ${await response.text()}`);
 		}
 
-		const parsedResponse = await response.json();
+		const parsedResponse = (await response.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
 		const accessToken = parsedResponse.access_token;
 		const refreshToken = parsedResponse.refresh_token;
 

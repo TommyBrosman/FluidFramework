@@ -12,6 +12,7 @@
 			"expect-puppeteer",
 		],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }

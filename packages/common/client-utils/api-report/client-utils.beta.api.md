@@ -6,6 +6,8 @@
 
 export { EventEmitter }
 
+export { performance_2 as performance }
+
 // (No @packageDocumentation comment for this package)
 
 ```

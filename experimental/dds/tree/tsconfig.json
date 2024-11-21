@@ -11,6 +11,7 @@
 		"moduleResolution": "Node16",
 		"rootDir": "./src",
 		"types": ["mocha"],
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }

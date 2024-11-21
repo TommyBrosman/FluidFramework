@@ -4,6 +4,7 @@
 		"outDir": "./lib",
 		"types": ["react", "react-dom"],
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*", "tests/**/*"],
 }

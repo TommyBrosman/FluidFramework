@@ -6,6 +6,7 @@
 		"outDir": "./lib",
 		"types": ["react", "react-dom"],
 		"noUncheckedIndexedAccess": false,
+		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],
 }
