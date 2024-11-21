@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"rootDir": "src",
 		"outDir": "./lib",
+		"types": ["mocha", "web"],
 		"exactOptionalPropertyTypes": false,
 		"lib": ["ES2020", "DOM"],
 	},

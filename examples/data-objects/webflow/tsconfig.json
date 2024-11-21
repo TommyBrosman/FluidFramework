@@ -5,9 +5,10 @@
 		"strictNullChecks": false,
 		"rootDir": "./src",
 		"outDir": "./lib",
-		"types": ["react", "react-dom"],
+		"types": ["react", "react-dom", "web"],
 		"resolveJsonModule": true,
 		"exactOptionalPropertyTypes": false,
+		"lib": ["ES2020", "DOM", "DOM.Iterable"],
 	},
 	"include": ["src/**/*"],
 }
