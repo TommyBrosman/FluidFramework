@@ -5,7 +5,6 @@
 		"outDir": "./lib",
 		"baseUrl": ".",
 		"noUncheckedIndexedAccess": false,
-		"types": ["node"],
 		"lib": ["ES2020", "DOM"],
 	},
 	"include": ["src/**/*"],

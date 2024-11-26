@@ -4,8 +4,6 @@
 
 ```ts
 
-export { Buffer_2 as Buffer }
-
 export { EventEmitter }
 
 export { performance_2 as performance }
