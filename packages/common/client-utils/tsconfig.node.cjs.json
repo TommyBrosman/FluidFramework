@@ -1,9 +1,8 @@
 {
 	// This config must be used in a "type": "commonjs" environment. (Use fluid-tsc commonjs.)
-	"extends": "./tsconfig.json",
+	"extends": "./tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "./dist",
-		// TODO: This is incorrect. We need four tsconfigs to match the export specification in the package.json.
 		"lib": ["ES2020"],
 	},
 }
