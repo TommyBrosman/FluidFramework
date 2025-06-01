@@ -221,10 +221,16 @@ export class ObjectNodeStoredSchema extends TreeNodeStoredSchema {
 		public readonly objectNodeFields: ReadonlyMap<FieldKey, TreeFieldStoredSchema>,
 		metadata?: PersistedMetadataFormat | undefined,
 	) {
+		console.log(
+			"Constructing ObjectNodeStoredSchema; metadata:",
+			metadata !== undefined ? JSON.stringify(metadata) : "[undefined]", "; objectNodeFields:",
+			JSON.stringify([...objectNodeFields.entries()]),
+		);
 		super(metadata);
 	}
 
 	public override encodeV1(): TreeNodeSchemaDataFormatV1 {
+		console.log("In encodeV1");
 		const fieldsObject: Record<string, FieldSchemaFormat> = Object.create(null);
 		// Sort fields to ensure output is identical for for equivalent schema (since field order is not considered significant).
 		// This makes comparing schema easier, and ensures chunk reuse for schema summaries isn't needlessly broken.
@@ -240,12 +246,14 @@ export class ObjectNodeStoredSchema extends TreeNodeStoredSchema {
 				value,
 			});
 		}
+		console.log("Returning from encodeV1", JSON.stringify(fieldsObject));
 		return {
 			object: fieldsObject,
 		};
 	}
 
 	public override encodeV2(): TreeNodeSchemaDataFormatV2 {
+		console.log("In encodeV2");
 		const fieldsObject: Record<string, FieldSchemaFormat> = Object.create(null);
 		// Sort fields to ensure output is identical for for equivalent schema (since field order is not considered significant).
 		// This makes comparing schema easier, and ensures chunk reuse for schema summaries isn't needlessly broken.
@@ -264,6 +272,11 @@ export class ObjectNodeStoredSchema extends TreeNodeStoredSchema {
 
 		const kind = { object: fieldsObject };
 
+		console.log("Returning from encodeV2", JSON.stringify(fieldsObject));
+		console.log(
+			"Returning from encodeV2, metadata:",
+			this.metadata !== undefined ? JSON.stringify(this.metadata) : "[undefined]",
+		);
 		// Omit metadata from the output if it is undefined
 		return this.metadata !== undefined ? { kind, metadata: this.metadata } : { kind };
 	}
@@ -361,6 +374,10 @@ export const storedSchemaDecodeDispatcher: DiscriminatedUnionDispatcher<
 	leaf: (data: PersistedValueSchema) => (metadata) =>
 		new LeafNodeStoredSchema(decodeValueSchema(data)),
 	object: (data: Record<TreeNodeSchemaIdentifier, FieldSchemaFormat>) => (metadata) => {
+		console.log(
+			"Processing object node inside storedSchemaDecodeDispatcher; field schema data:",
+			JSON.stringify(data),
+		);
 		const map = new Map();
 		for (const [key, value] of Object.entries(data)) {
 			map.set(key, decodeFieldSchema(value));
@@ -400,6 +417,7 @@ export function encodeFieldSchemaV1(schema: TreeFieldStoredSchema): FieldSchemaF
 export function encodeFieldSchemaV2(schema: TreeFieldStoredSchema): FieldSchemaFormatV2 {
 	const fieldSchema: FieldSchemaFormatV1 = encodeFieldSchemaV1(schema);
 
+	console.log("Inside encodeFieldSchemaV2; schema:", JSON.stringify(schema));
 	// Omit metadata from the output if it is undefined
 	return schema.metadata !== undefined
 		? { ...fieldSchema, metadata: schema.metadata }
