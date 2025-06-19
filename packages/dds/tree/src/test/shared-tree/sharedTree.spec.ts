@@ -2243,13 +2243,15 @@ describe("SharedTree", () => {
 
 	describe("Shared Tree format v5 enablement via `configuredSharedTree`", () => {
 		it("can create a SharedTree with format v5 enabled", async () => {
-			// Create and initialize the runtime factory
-			const runtime = new MockSharedTreeRuntime();
-
 			// Enable Shared Tree format v5, which corresponds to schema format v2. Create a Shared Tree instance.
-			const tree = configuredSharedTree({
-				formatVersion: SharedTreeFormatVersion.v5,
-			}).create(runtime);
+			const provider = await TestTreeProvider.create(
+				1,
+				SummarizeType.onDemand,
+				configuredSharedTree({
+					formatVersion: SharedTreeFormatVersion.v5,
+				}).getFactory(),
+			);
+
 			const schemaFactory = new SchemaFactoryAlpha("com.example");
 
 			// A schema with node and field persisted metadata
@@ -2263,6 +2265,7 @@ describe("SharedTree", () => {
 				{ persistedMetadata: { "nodeMetadata": 2 } },
 			) {}
 
+			const tree = provider.trees[0];
 			const treeView = tree.viewWith(
 				new TreeViewConfiguration({
 					schema: Foo,
@@ -2270,6 +2273,14 @@ describe("SharedTree", () => {
 			);
 
 			const schema = treeView.schema;
+
+			// Initialize the tree
+			treeView.initialize(new Foo({ bar: 42 }));
+
+			await provider.ensureSynchronized();
+
+			const summary = tree.getAttachSummary(true);
+			console.log(JSON.stringify(summary));
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			assert.deepEqual(schema.fields.get("bar")!.persistedMetadata, { "fieldMetadata": 1 });
 			assert.deepEqual(schema.persistedMetadata, { "nodeMetadata": 2 });
