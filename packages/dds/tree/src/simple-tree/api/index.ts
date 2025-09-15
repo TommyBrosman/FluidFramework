@@ -141,3 +141,4 @@ export {
 export { generateSchemaFromSimpleSchema } from "./schemaFromSimple.js";
 export { toSimpleTreeSchema } from "./viewSchemaToSimpleSchema.js";
 export type { TreeChangeEvents } from "./treeChangeEvents.js";
+export { Component } from "./component.js";

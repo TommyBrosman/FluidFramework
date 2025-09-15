@@ -38,6 +38,7 @@ export {
 	type TreeObjectNode,
 	type SimpleKeyMap,
 	type UnannotateSchemaRecord,
+	type ApplyKindAssignment,
 } from "./object/index.js";
 
 export {

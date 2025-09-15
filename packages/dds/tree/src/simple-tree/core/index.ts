@@ -50,6 +50,8 @@ export type {
 	FlexContent,
 } from "./treeNodeSchema.js";
 export {
+	type DefaultInsertableTreeNodeFromImplicitAllowedTypes,
+	type DefaultTreeNodeFromImplicitAllowedTypes,
 	isAnnotatedAllowedTypes,
 	isAnnotatedAllowedType,
 	normalizeAllowedTypes,

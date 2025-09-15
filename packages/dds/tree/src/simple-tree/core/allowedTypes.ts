@@ -19,6 +19,7 @@ import {
 	type TreeNodeSchema,
 } from "./treeNodeSchema.js";
 import { schemaAsTreeNodeValid } from "./treeNodeValid.js";
+import type { GetTypes } from "../customSchemaTypes.js";
 
 /**
  * Schema for types allowed in some location in a tree (like a field, map entry or array).
@@ -457,6 +458,14 @@ export function markSchemaMostDerived(
  */
 export type TreeNodeFromImplicitAllowedTypes<
 	TSchema extends ImplicitAllowedTypes = TreeNodeSchema,
+> = GetTypes<TSchema>["output"];
+
+/**
+ * Default type of tree node for a field of the given schema.
+ * @system @public
+ */
+export type DefaultTreeNodeFromImplicitAllowedTypes<
+	TSchema extends ImplicitAllowedTypes = TreeNodeSchema,
 > = TSchema extends TreeNodeSchema
 	? NodeFromSchema<TSchema>
 	: TSchema extends AllowedTypes
@@ -520,6 +529,17 @@ export type Input<T extends never> = T;
 /**
  * Type of content that can be inserted into the tree for a node of the given schema.
  *
+ * @typeparam TSchema - Schema to process.
+ * @remarks
+ * Defaults to {@link DefaultInsertableTreeNodeFromImplicitAllowedTypes}.
+ * @public
+ */
+export type InsertableTreeNodeFromImplicitAllowedTypes<TSchema extends ImplicitAllowedTypes> =
+	GetTypes<TSchema>["input"];
+
+/**
+ * Type of content that can be inserted into the tree for a node of the given schema.
+ *
  * @see {@link Input}
  *
  * @typeparam TSchema - Schema to process.
@@ -527,13 +547,15 @@ export type Input<T extends never> = T;
  * @privateRemarks
  * This is a bit overly conservative, since cases like `A | [A]` give never and could give `A`.
  * @public
+ * @system @public
  */
-export type InsertableTreeNodeFromImplicitAllowedTypes<TSchema extends ImplicitAllowedTypes> =
-	[TSchema] extends [TreeNodeSchema]
-		? InsertableTypedNode<TSchema>
-		: [TSchema] extends [AllowedTypes]
-			? InsertableTreeNodeFromAllowedTypes<TSchema>
-			: never;
+export type DefaultInsertableTreeNodeFromImplicitAllowedTypes<
+	TSchema extends ImplicitAllowedTypes,
+> = [TSchema] extends [TreeNodeSchema]
+	? InsertableTypedNode<TSchema>
+	: [TSchema] extends [AllowedTypes]
+		? InsertableTreeNodeFromAllowedTypes<TSchema>
+		: never;
 
 /**
  * Type of content that can be inserted into the tree for a node of the given schema.

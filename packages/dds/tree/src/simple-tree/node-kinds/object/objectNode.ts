@@ -91,6 +91,7 @@ import {
 	type InsertableContent,
 } from "../../unhydratedFlexTreeFromInsertable.js";
 import { convertField, convertFieldKind } from "../../toStoredSchema.js";
+import type { GetTypes, SchemaUnionToIntersection } from "../../customSchemaTypes.js";
 
 /**
  * Generates the properties for an ObjectNode from its field schema object.
@@ -100,15 +101,51 @@ import { convertField, convertFieldKind } from "../../toStoredSchema.js";
  * or using some other method like {@link (TreeAlpha:interface).create}.
  * @system @public
  */
-export type ObjectFromSchemaRecord<T extends RestrictiveStringRecord<ImplicitFieldSchema>> =
-	RestrictiveStringRecord<ImplicitFieldSchema> extends T
-		? // eslint-disable-next-line @typescript-eslint/ban-types
-			{}
-		: {
-				-readonly [Property in keyof T]: Property extends string
-					? TreeFieldFromImplicitField<T[Property]>
-					: unknown;
-			};
+export type ObjectFromSchemaRecord<T extends RestrictiveStringRecord<ImplicitFieldSchema>> = {
+	// Due to https://github.com/microsoft/TypeScript/issues/43826 we can not set the desired setter type,
+	// but we can at least remove the setter (by setting the key to never) when there should be no setter.
+	-readonly [Property in keyof T as [
+		AssignableTreeFieldFromImplicitField<T[Property & string]>,
+		// If the types we want to allow setting to are just never or undefined, remove the setter
+	] extends [never | undefined]
+		? never
+		: Property]: AssignableTreeFieldFromImplicitField<T[Property & string]>;
+} & {
+	readonly [Property in keyof T]: TreeFieldFromImplicitField<T[Property & string]>;
+};
+
+/**
+ * Type of content that can be assigned to a field of the given schema.
+ *
+ * @see {@link Input}
+ *
+ * @typeparam TSchemaInput - Schema to process.
+ * @typeparam TSchema - Do not specify: default value used as an implementation detail.
+ * @system @public
+ */
+export type AssignableTreeFieldFromImplicitField<
+	TSchemaInput extends ImplicitFieldSchema,
+	TSchema = SchemaUnionToIntersection<TSchemaInput>,
+> = [TSchema] extends [FieldSchema<infer Kind, infer Types>]
+	? ApplyKindAssignment<GetTypes<Types>["readWrite"], Kind>
+	: [TSchema] extends [ImplicitAllowedTypes]
+		? GetTypes<TSchema>["readWrite"]
+		: never;
+
+/**
+ * Suitable for assignment.
+ *
+ * @see {@link Input}
+ * @system @public
+ */
+export type ApplyKindAssignment<T, Kind extends FieldKind> = [Kind] extends [
+	FieldKind.Required,
+]
+	? T
+	: [Kind] extends [FieldKind.Optional]
+		? T | undefined
+		: // Unknown, non-exact and identifier fields are not assignable.
+			never;
 
 /**
  * A {@link TreeNode} which models a JavaScript object.

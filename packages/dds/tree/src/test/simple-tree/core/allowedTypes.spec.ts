@@ -26,6 +26,7 @@ import type {
 	requireAssignableTo,
 	requireFalse,
 	requireTrue,
+	UnionToIntersection,
 } from "../../../util/index.js";
 
 import {
@@ -51,6 +52,11 @@ import {
 	// eslint-disable-next-line import/no-internal-modules
 } from "../../../simple-tree/core/allowedTypes.js";
 import { validateUsageError } from "../../utils.js";
+import type {
+	CustomizedSchemaTyping,
+	SchemaUnionToIntersection,
+	// eslint-disable-next-line import/no-internal-modules
+} from "../../../simple-tree/customSchemaTypes.js";
 
 const schema = new SchemaFactory("com.example");
 
@@ -248,6 +254,26 @@ const schema = new SchemaFactory("com.example");
 			readonly [LazyItem<TreeNodeSchema>, typeof SchemaFactory.number]
 		>;
 	}
+}
+
+// CustomSchemaIntersection
+{
+	class A extends schema.object("A", { x: [schema.number, schema.string] }) {}
+	class B extends schema.object("B", { x: [schema.number, schema.null] }) {}
+	type Original = A | B;
+	type Custom = CustomizedSchemaTyping<Original, { input: 1; output: 2; readWrite: 3 }>;
+	type OriginalIntersection = UnionToIntersection<Original>;
+	type CustomIntersection = UnionToIntersection<Custom>;
+
+	type OriginalSchemaIntersection = SchemaUnionToIntersection<Original>;
+	type CustomSchemaIntersection = SchemaUnionToIntersection<Custom>;
+
+	type _check1 = requireTrue<areSafelyAssignable<OriginalIntersection, never>>;
+	type _check2 = requireTrue<areSafelyAssignable<CustomIntersection, never>>;
+	type _check3 = requireTrue<areSafelyAssignable<OriginalSchemaIntersection, never>>;
+	type _check4 = requireTrue<
+		areSafelyAssignable<CustomSchemaIntersection, CustomSchemaIntersection>
+	>;
 }
 
 describe("allowedTypes", () => {

@@ -166,6 +166,7 @@ export {
 	KeyEncodingOptions,
 	type TreeParsingOptions,
 	type SchemaFactory_base,
+	Component,
 } from "./api/index.js";
 export type {
 	SimpleTreeSchema,
@@ -263,3 +264,8 @@ export {
 	nullSchema,
 } from "./leafNodeSchema.js";
 export type { LeafSchema } from "./leafNodeSchema.js";
+export {
+	customizeSchemaTyping,
+	type Customizer,
+	type GetTypes,
+} from "./customSchemaTypes.js";
