@@ -3,7 +3,6 @@
 "@fluidframework/datastore": minor
 "@fluidframework/runtime-definitions": minor
 "@fluidframework/shared-object-base": minor
-"@fluidframework/test-runtime-utils": minor
 "@fluidframework/test-utils": minor
 "__section": breaking
 ---
@@ -25,7 +24,6 @@ Additionally the following properties now always return a value, rather than pos
 - `FluidDataStoreRuntime.minVersionForCollab` in `@fluidframework/datastore`.
 Note that API Extractor shows this as a breaking change since FluidDataStoreRuntime is beta + legacy and non-sealed.
 However, FluidDataStoreRuntime is not intended to be extended directly outside of a known legacy use-case.
-- `MockFluidDataStoreRuntime.minVersionForCollab` in `@fluidframework/test-runtime-utils`.
 - `IDataObjectProps.context.minVersionForCollab` in `@fluidframework/aqueduct`.
 - `ITestFluidObject.context.minVersionForCollab` in `@fluidframework/test-utils`
 - `IProvideTestFluidObject.ITestFluidObject.context.minVersionForCollab` in `@fluidframework/test-utils`
