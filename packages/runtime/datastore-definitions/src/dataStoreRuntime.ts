@@ -17,7 +17,10 @@ import type { IFluidHandleContext } from "@fluidframework/core-interfaces/intern
 import type { IQuorumClients } from "@fluidframework/driver-definitions";
 import type { ISequencedDocumentMessage } from "@fluidframework/driver-definitions/internal";
 import type { IIdCompressor } from "@fluidframework/id-compressor";
-import type { IInboundSignalMessage } from "@fluidframework/runtime-definitions/internal";
+import type {
+	IInboundSignalMessage,
+	MinimumVersionForCollab,
+} from "@fluidframework/runtime-definitions/internal";
 
 import type { IChannel } from "./channel.js";
 
@@ -206,4 +209,14 @@ export interface IFluidDataStoreRuntimeAlpha extends IFluidDataStoreRuntime {
  */
 export interface IFluidDataStoreRuntimeInternalConfig {
 	readonly submitMessagesWithoutEncodingHandles?: boolean;
+
+	/**
+	 * Minimum version of the Fluid Framework runtime that is required to collaborate on new documents.
+	 * @remarks
+	 * DDSes may read this value to determine which feature flags should be enabled.Expand commentComment on line R313Resolved
+	 * This property is consumed by `SharedObjectFactory` (which are implementations of
+	 * {@link @fluidframework/datastore-definitions#IChannelFactory}).
+	 * See {@link @fluidframework/container-runtime#LoadContainerRuntimeParams.minVersionForCollab} for more details.
+	 */
+	readonly minVersionForCollab?: MinimumVersionForCollab;
 }
