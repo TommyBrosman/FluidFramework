@@ -112,7 +112,7 @@
 		"ci:build:api-reports:current": "api-extractor run --config api-extractor/api-extractor.current.json",
 		"ci:build:api-reports:legacy": "api-extractor run --config api-extractor/api-extractor.legacy.json",
 		"ci:build:docs": "api-extractor run",
-		"clean": "rimraf --glob dist lib {alpha,beta,internal,legacy}.d.ts \"**/*.tsbuildinfo\" \"**/*.build.log\" _api-extractor-temp nyc",
+		"clean": "rimraf --glob dist lib {alpha,beta,internal,legacy}.d.ts \"**/*.tsbuildinfo\" \"**/*.build.log\" _api-extractor-temp nyc .bootperfTestsOutput",
 		"depcruise": "depcruise src/ --ignore-known",
 		"depcruise:regen-known-issues": "depcruise-baseline src",
 		"eslint": "eslint --quiet --format stylish src",
@@ -125,6 +125,9 @@
 		"pack:tests": "tar -cf ./tree.test-files.tar ./src/test ./dist/test ./lib/test",
 		"test": "npm run test:mocha",
 		"test:benchmark:report": "mocha --exit --perfMode --parentProcess --fgrep @Benchmark --fgrep @ExecutionTime --reporter @fluid-tools/benchmark/dist/MochaReporter.js --timeout 60000",
+		"test:bootperf": "webpack --config webpack.bootperf.cjs && mocha --perfMode --parentProcess --config ./src/test/bootperf/.mocharc.cjs",
+		"test:bootperf:build": "webpack --config webpack.bootperf.cjs",
+		"test:bootperf:report": "webpack --config webpack.bootperf.cjs && mocha --perfMode --parentProcess --config ./src/test/bootperf/.mocharc.cjs",
 		"test:coverage": "c8 npm test",
 		"test:customBenchmarks": "mocha --config ./.mocharc.customBenchmarks.cjs",
 		"test:customBenchmarks:verbose": "cross-env FLUID_TEST_VERBOSE=1 npm run test:customBenchmarks",
@@ -220,7 +223,10 @@
 		"mocha": "^11.7.5",
 		"mocha-multi-reporters": "^1.5.1",
 		"rimraf": "^6.1.3",
-		"typescript": "~5.4.5"
+		"ts-loader": "^9.5.1",
+		"typescript": "~5.4.5",
+		"webpack": "^5.94.0",
+		"webpack-cli": "^5.1.4"
 	},
 	"fluidBuild": {
 		"tasks": {

@@ -4,6 +4,7 @@
 	"compilerOptions": {
 		"outDir": "../../dist/test",
 	},
+	"exclude": ["./bootperf/**"],
 	"references": [
 		{
 			"path": "../../tsconfig.cjs.json",
