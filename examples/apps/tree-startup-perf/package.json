@@ -26,6 +26,7 @@
 		"lint": "fluid-build . --task lint",
 		"lint:fix": "fluid-build . --task eslint:fix --task format",
 		"prepack": "npm run webpack",
+		"lighthouse": "lhci autorun",
 		"start": "webpack serve",
 		"webpack": "webpack --env production",
 		"webpack:dev": "webpack --env development"
@@ -36,6 +37,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "~2.4.5",
 		"@fluidframework/build-tools": "catalog:buildTools",
+		"@lhci/cli": "^0.15.1",
 		"@fluidframework/eslint-config-fluid": "catalog:eslint",
 		"eslint": "catalog:eslint",
 		"html-webpack-plugin": "^5.6.0",

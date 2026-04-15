@@ -19,3 +19,6 @@ view.initialize({ value: 0 });
 
 // Log to the console so the imports are not tree-shaken away.
 console.log("SharedTree initialized", view.root.value);
+
+// Paint a minimal element so Lighthouse can measure First Contentful Paint.
+document.body.textContent = `SharedTree initialized: ${view.root.value}`;
