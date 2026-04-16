@@ -5,9 +5,29 @@
 
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
+const webpack = require("webpack");
 
 module.exports = (env) => {
 	const { production } = env;
+
+	// Set PADDING_KB to inject a padding comment into the bundle for testing
+	// the effect of bundle size on Lighthouse metrics. Example:
+	//   npx webpack --env production --env paddingKb=500
+	const paddingKb = Number(env.paddingKb) || 0;
+	const plugins = [
+		new HtmlWebpackPlugin({
+			template: "./src/index.html",
+		}),
+	];
+
+	if (paddingKb > 0) {
+		plugins.push(
+			new webpack.BannerPlugin({
+				banner: `var __padding="${"x".repeat(paddingKb * 1024)}";`,
+				raw: true,
+			}),
+		);
+	}
 
 	return {
 		entry: {
@@ -34,11 +54,7 @@ module.exports = (env) => {
 			devtoolNamespace: "fluid-example/tree-startup-perf",
 			libraryTarget: "umd",
 		},
-		plugins: [
-			new HtmlWebpackPlugin({
-				template: "./src/index.html",
-			}),
-		],
+		plugins,
 		mode: production ? "production" : "development",
 		devtool: production ? "source-map" : "inline-source-map",
 	};
