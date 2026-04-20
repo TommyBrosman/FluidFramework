@@ -27,6 +27,7 @@
 		"lint:fix": "fluid-build . --task eslint:fix --task format",
 		"prepack": "npm run webpack",
 		"lighthouse": "lhci autorun",
+		"sweep": "tsx scripts/sweep.ts",
 		"start": "webpack serve",
 		"webpack": "webpack --env production",
 		"webpack:dev": "webpack --env development"
@@ -37,8 +38,8 @@
 	"devDependencies": {
 		"@biomejs/biome": "~2.4.5",
 		"@fluidframework/build-tools": "catalog:buildTools",
-		"@lhci/cli": "^0.15.1",
 		"@fluidframework/eslint-config-fluid": "catalog:eslint",
+		"@lhci/cli": "^0.15.1",
 		"chrome-launcher": "^1.2.1",
 		"eslint": "catalog:eslint",
 		"html-webpack-plugin": "^5.6.0",
@@ -46,6 +47,7 @@
 		"lighthouse": "^12.6.1",
 		"rimraf": "^6.1.3",
 		"ts-loader": "^9.5.1",
+		"tsx": "^4.21.0",
 		"typescript": "~5.4.5",
 		"webpack": "^5.94.0",
 		"webpack-cli": "^5.1.4",

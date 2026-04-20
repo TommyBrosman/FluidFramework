@@ -12,18 +12,19 @@
  * discard otherwise-successful results.
  *
  * Usage:
- *   node scripts/sweep.mjs
- *   node scripts/sweep.mjs --throttle=slow4g
- *   node scripts/sweep.mjs --iterations=5 --paddingStep=512 --throttle=desktop
+ *   npx tsx scripts/sweep.ts
+ *   npx tsx scripts/sweep.ts --throttle=slow4g
+ *   npx tsx scripts/sweep.ts --iterations=5 --paddingStep=512 --throttle=desktop
  *
  * Throttle profiles: none, desktop, slow4g, regular3g
  */
 
 import { execSync } from "node:child_process";
-import { createServer } from "node:http";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, extname } from "node:path";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, extname, dirname } from "node:path";
 import { parseArgs } from "node:util";
+import type { AddressInfo } from "node:net";
 
 // Import Lighthouse's built-in throttling presets.
 const { throttling: builtIn } = await import("lighthouse/core/config/constants.js");
@@ -43,10 +44,22 @@ const { values: args } = parseArgs({
 
 const iterations = Number(args.iterations);
 const paddingStep = Number(args.paddingStep); // KB per iteration
-const csvPath = args.output;
+const csvPath = args.output as string;
 const distDir = "dist";
 
-const throttleProfiles = {
+interface ThrottleProfile {
+	throttlingMethod: "devtools" | "simulate" | "provided";
+	throttling: {
+		cpuSlowdownMultiplier: number;
+		requestLatencyMs: number;
+		downloadThroughputKbps: number;
+		uploadThroughputKbps: number;
+		throughputKbps?: number;
+		rttMs: number;
+	};
+}
+
+const throttleProfiles: Record<string, ThrottleProfile> = {
 	none: {
 		throttlingMethod: "provided",
 		throttling: {
@@ -72,7 +85,7 @@ const throttleProfiles = {
 	},
 };
 
-const profileName = args.throttle;
+const profileName = args.throttle as string;
 const profile = throttleProfiles[profileName];
 if (!profile) {
 	console.error(
@@ -82,7 +95,7 @@ if (!profile) {
 }
 console.log(`Throttle profile: ${profileName}`);
 
-const mimeTypes = {
+const mimeTypes: Record<string, string> = {
 	".html": "text/html",
 	".js": "application/javascript",
 	".map": "application/json",
@@ -92,10 +105,10 @@ const mimeTypes = {
  * Start a simple static file server for the dist directory.
  * Returns { server, port }.
  */
-function startServer() {
+function startServer(): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
 	return new Promise((resolve) => {
-		const server = createServer((req, res) => {
-			const filePath = join(distDir, req.url === "/" ? "index.html" : req.url);
+		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+			const filePath = join(distDir, req.url === "/" ? "index.html" : (req.url ?? ""));
 			try {
 				const data = readFileSync(filePath);
 				const ext = extname(filePath);
@@ -107,7 +120,7 @@ function startServer() {
 			}
 		});
 		server.listen(0, () => {
-			resolve({ server, port: server.address().port });
+			resolve({ server, port: (server.address() as AddressInfo).port });
 		});
 	});
 }
@@ -116,7 +129,8 @@ function startServer() {
  * Run Lighthouse against the given URL using the Node API.
  * Handles chrome-launcher cleanup errors gracefully.
  */
-async function runLighthouse(url) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function runLighthouse(url: string): Promise<any> {
 	const lighthouse = (await import("lighthouse")).default;
 	const { launch } = await import("chrome-launcher");
 
@@ -157,6 +171,7 @@ const header = [
 	"performanceScore",
 ].join(",");
 
+mkdirSync(dirname(csvPath), { recursive: true });
 writeFileSync(csvPath, header + "\n");
 console.log(`Created ${csvPath}`);
 
@@ -190,7 +205,7 @@ try {
 			continue;
 		}
 
-		const audit = (id) => lhr.audits[id]?.numericValue ?? "N/A";
+		const audit = (id: string): number | string => lhr.audits[id]?.numericValue ?? "N/A";
 
 		const row = [
 			paddingKb,
