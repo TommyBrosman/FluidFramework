@@ -4,8 +4,16 @@
  */
 
 /**
- * One-off script that builds the bundle at increasing padding sizes and
- * collects Lighthouse metrics for each, writing results to a CSV file.
+ * One-off script that builds the bundle at increasing sizes and collects
+ * Lighthouse metrics for each, writing results to a CSV file.
+ *
+ * Supports three ballast modes:
+ *
+ * - padding: insert string padding via BannerPlugin (network cost only)
+ *
+ * - code: generated synthetic JS modules (network + parse/compile/execute)
+ *
+ * - both: runs padding then code sweeps into the same CSV for comparison
  *
  * Uses the Lighthouse Node API directly (instead of LHCI CLI) to avoid
  * chrome-launcher temp-dir cleanup errors on Windows that cause LHCI to
@@ -15,14 +23,13 @@
  *
  * npx tsx scripts/sweep.ts
  *
- * npx tsx scripts/sweep.ts --throttle=mobile
+ * npx tsx scripts/sweep.ts --mode=code --throttle=mobile
  *
- * npx tsx scripts/sweep.ts --iterations=5 --paddingStep=512 --throttle=desktop
+ * npx tsx scripts/sweep.ts --mode=both --iterations=5 --sizeStep=256
  *
  * Throttle profiles: desktop, mobile
  */
 
-/* eslint-disable import-x/no-nodejs-modules */
 import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -30,7 +37,6 @@ import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { dirname, extname, join } from "node:path";
 import { parseArgs } from "node:util";
-/* eslint-enable import-x/no-nodejs-modules */
 
 import type { Flags, Result, RunnerResult } from "lighthouse";
 
@@ -42,7 +48,12 @@ const { throttleProfiles }: { throttleProfiles: Record<string, Partial<Flags>> }
 const { values: args } = parseArgs({
 	options: {
 		iterations: { type: "string", default: "10" },
-		paddingStep: { type: "string", default: "256" },
+		sizeStep: { type: "string", default: "256" },
+		mode: {
+			type: "string",
+			default: "padding",
+			// padding | code | both
+		},
 		throttle: {
 			type: "string",
 			default: "mobile",
@@ -53,9 +64,10 @@ const { values: args } = parseArgs({
 });
 
 const iterations = Number(args.iterations);
-const paddingStep = Number(args.paddingStep); // KB per iteration
+const sizeStep = Number(args.sizeStep); // KB per iteration
 const csvPath = args.output ?? join(".lighthouseci", "lighthouse-sweep.csv");
 const distDir = "dist";
+const mode = args.mode ?? "padding";
 
 const profileName = args.throttle ?? "mobile";
 const profile: Partial<Flags> | undefined = throttleProfiles[profileName];
@@ -66,7 +78,15 @@ if (profile === undefined) {
 	// eslint-disable-next-line unicorn/no-process-exit
 	process.exit(1);
 }
-console.log(`Throttle profile: ${profileName}`);
+
+const validModes = ["padding", "code", "both"];
+if (!validModes.includes(mode)) {
+	console.error(`Unknown mode: "${mode}". Options: ${validModes.join(", ")}`);
+	// eslint-disable-next-line unicorn/no-process-exit
+	process.exit(1);
+}
+
+console.log(`Throttle profile: ${profileName}, mode: ${mode}`);
 
 const mimeTypes: Record<string, string> = {
 	".html": "text/html",
@@ -143,8 +163,42 @@ function getAuditValue(lhr: Result, id: string): number | string {
 	return lhr.audits[id]?.numericValue ?? "N/A";
 }
 
+/**
+ * Approximate KB per generated ballast chunk (after minification).
+ * Measured empirically: 50 chunks adds ~61 KB → ~1.22 KB/chunk.
+ */
+const APPROX_KB_PER_CHUNK = 1.25;
+
+/**
+ * Generate ballast chunks for the given target size in KB.
+ * Returns the number of chunks generated.
+ */
+function generateBallast(targetKb: number): void {
+	const chunks = Math.round(targetKb / APPROX_KB_PER_CHUNK);
+	execSync(`npx tsx scripts/generateBallast.ts --chunks=${chunks}`, {
+		stdio: "inherit",
+	});
+}
+
+/**
+ * Build the webpack bundle with the given padding (KB) and ballast mode.
+ */
+function build(ballastMode: "padding" | "code", targetKb: number): void {
+	if (ballastMode === "code") {
+		generateBallast(targetKb);
+		execSync("npx webpack --env production --env paddingKb=0 --env ballast", {
+			stdio: "inherit",
+		});
+	} else {
+		execSync(`npx webpack --env production --env paddingKb=${targetKb}`, {
+			stdio: "inherit",
+		});
+	}
+}
+
 const header = [
-	"paddingKb",
+	"mode",
+	"targetKb",
 	"bundleSizeBytes",
 	"firstContentfulPaint",
 	"largestContentfulPaint",
@@ -162,48 +216,56 @@ const { serv: httpServer, port } = await startServer();
 const sweepUrl = `http://localhost:${port}/index.html`;
 console.log(`Static server running on port ${port}`);
 
+const modesToRun: ("padding" | "code")[] =
+	mode === "both" ? ["padding", "code"] : [mode as "padding" | "code"];
+
 try {
-	for (let i = 0; i < iterations; i++) {
-		const paddingKb = i * paddingStep;
-		console.log(`\n=== Iteration ${i + 1}/${iterations}: paddingKb=${paddingKb} ===`);
+	for (const currentMode of modesToRun) {
+		console.log(`\n>>> Starting sweep: mode=${currentMode} <<<`);
 
-		// Build
-		console.log("Building...");
-		execSync(`npx webpack --env production --env paddingKb=${paddingKb}`, {
-			stdio: "inherit",
-		});
-
-		// Get bundle size
-		const bundleSizeBytes = statSync("dist/app.bundle.js").size;
-		console.log(`Bundle size: ${(bundleSizeBytes / 1024).toFixed(0)} KB`);
-
-		// Run Lighthouse
-		console.log("Running Lighthouse...");
-		const lhr = await runLighthouse(sweepUrl);
-
-		if (lhr === undefined || lhr.runtimeError?.code !== undefined) {
-			console.warn(
-				`Lighthouse error: ${lhr?.runtimeError?.code ?? "no result"}, skipping iteration`,
+		for (let i = 0; i < iterations; i++) {
+			const targetKb = i * sizeStep;
+			console.log(
+				`\n=== [${currentMode}] Iteration ${i + 1}/${iterations}: targetKb=${targetKb} ===`,
 			);
-			continue;
+
+			// Build
+			console.log("Building...");
+			build(currentMode, targetKb);
+
+			// Get bundle size
+			const bundleSizeBytes = statSync("dist/app.bundle.js").size;
+			console.log(`Bundle size: ${(bundleSizeBytes / 1024).toFixed(0)} KB`);
+
+			// Run Lighthouse
+			console.log("Running Lighthouse...");
+			const lhr = await runLighthouse(sweepUrl);
+
+			if (lhr === undefined || lhr.runtimeError?.code !== undefined) {
+				console.warn(
+					`Lighthouse error: ${lhr?.runtimeError?.code ?? "no result"}, skipping iteration`,
+				);
+				continue;
+			}
+
+			const row = [
+				currentMode,
+				targetKb,
+				bundleSizeBytes,
+				getAuditValue(lhr, "first-contentful-paint"),
+				getAuditValue(lhr, "largest-contentful-paint"),
+				getAuditValue(lhr, "speed-index"),
+				getAuditValue(lhr, "total-blocking-time"),
+				getAuditValue(lhr, "interactive"),
+				(lhr.categories?.performance?.score ?? 0) * 100,
+			].join(",");
+
+			writeFileSync(csvPath, `${readFileSync(csvPath, "utf8")}${row}\n`);
+			console.log(`Recorded: ${row}`);
+
+			// Brief pause to let Chrome fully release resources on Windows.
+			await new Promise((resolve) => setTimeout(resolve, 2000));
 		}
-
-		const row = [
-			paddingKb,
-			bundleSizeBytes,
-			getAuditValue(lhr, "first-contentful-paint"),
-			getAuditValue(lhr, "largest-contentful-paint"),
-			getAuditValue(lhr, "speed-index"),
-			getAuditValue(lhr, "total-blocking-time"),
-			getAuditValue(lhr, "interactive"),
-			(lhr.categories?.performance?.score ?? 0) * 100,
-		].join(",");
-
-		writeFileSync(csvPath, `${readFileSync(csvPath, "utf8")}${row}\n`);
-		console.log(`Recorded: ${row}`);
-
-		// Brief pause to let Chrome fully release resources on Windows.
-		await new Promise((resolve) => setTimeout(resolve, 2000));
 	}
 } finally {
 	httpServer.close();

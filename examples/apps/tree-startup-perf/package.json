@@ -27,6 +27,7 @@
 		"lint:fix": "fluid-build . --task eslint:fix --task format",
 		"prepack": "npm run webpack",
 		"lighthouse": "lhci autorun",
+		"generate-ballast": "tsx scripts/generateBallast.ts",
 		"sweep": "tsx scripts/sweep.ts",
 		"start": "webpack serve",
 		"webpack": "webpack --env production",

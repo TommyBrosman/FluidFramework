@@ -18,6 +18,12 @@ const config: Linter.Config[] = [
 			},
 		},
 	},
+	{
+		files: ["scripts/**"],
+		rules: {
+			"import-x/no-nodejs-modules": "off",
+		},
+	},
 ];
 
 export default config;

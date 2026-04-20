@@ -29,9 +29,17 @@ module.exports = (env) => {
 		);
 	}
 
+	// When --env ballast is set, include the generated ballast barrel as an
+	// additional entry so its parse/compile/execute cost is measured.  The
+	// _generated/ directory is fully gitignored; only sweep.ts produces it.
+	const entry = ["./src/app.ts"];
+	if (env.ballast) {
+		entry.push("./_generated/index.ts");
+	}
+
 	return {
 		entry: {
-			app: "./src/app.ts",
+			app: entry,
 		},
 		resolve: {
 			extensionAlias: {
