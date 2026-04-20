@@ -12,22 +12,32 @@
  * discard otherwise-successful results.
  *
  * Usage:
- *   npx tsx scripts/sweep.ts
- *   npx tsx scripts/sweep.ts --throttle=slow4g
- *   npx tsx scripts/sweep.ts --iterations=5 --paddingStep=512 --throttle=desktop
  *
- * Throttle profiles: none, desktop, slow4g, regular3g
+ * npx tsx scripts/sweep.ts
+ *
+ * npx tsx scripts/sweep.ts --throttle=mobile
+ *
+ * npx tsx scripts/sweep.ts --iterations=5 --paddingStep=512 --throttle=desktop
+ *
+ * Throttle profiles: desktop, mobile
  */
 
+/* eslint-disable import-x/no-nodejs-modules */
 import { execSync } from "node:child_process";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, extname, dirname } from "node:path";
-import { parseArgs } from "node:util";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
+import { dirname, extname, join } from "node:path";
+import { parseArgs } from "node:util";
+/* eslint-enable import-x/no-nodejs-modules */
 
-// Import Lighthouse's built-in throttling presets.
-const { throttling: builtIn } = await import("lighthouse/core/config/constants.js");
+import type { Flags, Result, RunnerResult } from "lighthouse";
+
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const { throttleProfiles }: { throttleProfiles: Record<string, Partial<Flags>> } =
+	require("../throttleProfiles.cjs");
 
 const { values: args } = parseArgs({
 	options: {
@@ -35,8 +45,8 @@ const { values: args } = parseArgs({
 		paddingStep: { type: "string", default: "256" },
 		throttle: {
 			type: "string",
-			default: "none",
-			// none | desktop | slow4g | regular3g
+			default: "mobile",
+			// desktop | mobile
 		},
 		output: { type: "string", default: join(".lighthouseci", "lighthouse-sweep.csv") },
 	},
@@ -44,53 +54,16 @@ const { values: args } = parseArgs({
 
 const iterations = Number(args.iterations);
 const paddingStep = Number(args.paddingStep); // KB per iteration
-const csvPath = args.output as string;
+const csvPath = args.output ?? join(".lighthouseci", "lighthouse-sweep.csv");
 const distDir = "dist";
 
-interface ThrottleProfile {
-	throttlingMethod: "devtools" | "simulate" | "provided";
-	throttling: {
-		cpuSlowdownMultiplier: number;
-		requestLatencyMs: number;
-		downloadThroughputKbps: number;
-		uploadThroughputKbps: number;
-		throughputKbps?: number;
-		rttMs: number;
-	};
-}
-
-const throttleProfiles: Record<string, ThrottleProfile> = {
-	none: {
-		throttlingMethod: "provided",
-		throttling: {
-			cpuSlowdownMultiplier: 1,
-			requestLatencyMs: 0,
-			downloadThroughputKbps: 0,
-			uploadThroughputKbps: 0,
-			throughputKbps: 0,
-			rttMs: 0,
-		},
-	},
-	desktop: {
-		throttlingMethod: "devtools",
-		throttling: builtIn.desktopDense4G,
-	},
-	slow4g: {
-		throttlingMethod: "devtools",
-		throttling: builtIn.mobileSlow4G,
-	},
-	regular3g: {
-		throttlingMethod: "devtools",
-		throttling: builtIn.mobileRegular3G,
-	},
-};
-
-const profileName = args.throttle as string;
-const profile = throttleProfiles[profileName];
-if (!profile) {
+const profileName = args.throttle ?? "mobile";
+const profile: Partial<Flags> | undefined = throttleProfiles[profileName];
+if (profile === undefined) {
 	console.error(
 		`Unknown throttle profile: "${profileName}". Options: ${Object.keys(throttleProfiles).join(", ")}`,
 	);
+	// eslint-disable-next-line unicorn/no-process-exit
 	process.exit(1);
 }
 console.log(`Throttle profile: ${profileName}`);
@@ -103,24 +76,30 @@ const mimeTypes: Record<string, string> = {
 
 /**
  * Start a simple static file server for the dist directory.
- * Returns { server, port }.
+ *
+ * @returns the server and port.
  */
-function startServer(): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
+async function startServer(): Promise<{
+	serv: ReturnType<typeof createServer>;
+	port: number;
+}> {
 	return new Promise((resolve) => {
-		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+		const serv = createServer((req: IncomingMessage, res: ServerResponse) => {
 			const filePath = join(distDir, req.url === "/" ? "index.html" : (req.url ?? ""));
 			try {
 				const data = readFileSync(filePath);
 				const ext = extname(filePath);
-				res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+				res.writeHead(200, {
+					"Content-Type": mimeTypes[ext] ?? "application/octet-stream",
+				});
 				res.end(data);
 			} catch {
 				res.writeHead(404);
 				res.end("Not found");
 			}
 		});
-		server.listen(0, () => {
-			resolve({ server, port: (server.address() as AddressInfo).port });
+		serv.listen(0, () => {
+			resolve({ serv, port: (serv.address() as AddressInfo).port });
 		});
 	});
 }
@@ -129,14 +108,14 @@ function startServer(): Promise<{ server: ReturnType<typeof createServer>; port:
  * Run Lighthouse against the given URL using the Node API.
  * Handles chrome-launcher cleanup errors gracefully.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function runLighthouse(url: string): Promise<any> {
-	const lighthouse = (await import("lighthouse")).default;
+async function runLighthouse(targetUrl: string): Promise<Result | undefined> {
+	const lighthouseModule = await import("lighthouse");
+	const lighthouse = lighthouseModule.default;
 	const { launch } = await import("chrome-launcher");
 
 	const chrome = await launch({ chromeFlags: ["--headless"] });
 	try {
-		const result = await lighthouse(url, {
+		const result: RunnerResult | undefined = await lighthouse(targetUrl, {
 			port: chrome.port,
 			output: "json",
 			onlyCategories: ["performance"],
@@ -150,14 +129,18 @@ async function runLighthouse(url: string): Promise<any> {
 				disabled: false,
 			},
 		});
-		return result?.lhr ?? null;
+		return result?.lhr;
 	} finally {
 		try {
-			await chrome.kill();
+			chrome.kill();
 		} catch {
 			// Ignore chrome-launcher cleanup errors on Windows.
 		}
 	}
+}
+
+function getAuditValue(lhr: Result, id: string): number | string {
+	return lhr.audits[id]?.numericValue ?? "N/A";
 }
 
 const header = [
@@ -172,11 +155,11 @@ const header = [
 ].join(",");
 
 mkdirSync(dirname(csvPath), { recursive: true });
-writeFileSync(csvPath, header + "\n");
+writeFileSync(csvPath, `${header}\n`);
 console.log(`Created ${csvPath}`);
 
-const { server, port } = await startServer();
-const url = `http://localhost:${port}/index.html`;
+const { serv: httpServer, port } = await startServer();
+const sweepUrl = `http://localhost:${port}/index.html`;
 console.log(`Static server running on port ${port}`);
 
 try {
@@ -196,36 +179,34 @@ try {
 
 		// Run Lighthouse
 		console.log("Running Lighthouse...");
-		const lhr = await runLighthouse(url);
+		const lhr = await runLighthouse(sweepUrl);
 
-		if (!lhr || lhr.runtimeError?.code) {
+		if (lhr === undefined || lhr.runtimeError?.code !== undefined) {
 			console.warn(
 				`Lighthouse error: ${lhr?.runtimeError?.code ?? "no result"}, skipping iteration`,
 			);
 			continue;
 		}
 
-		const audit = (id: string): number | string => lhr.audits[id]?.numericValue ?? "N/A";
-
 		const row = [
 			paddingKb,
 			bundleSizeBytes,
-			audit("first-contentful-paint"),
-			audit("largest-contentful-paint"),
-			audit("speed-index"),
-			audit("total-blocking-time"),
-			audit("interactive"),
+			getAuditValue(lhr, "first-contentful-paint"),
+			getAuditValue(lhr, "largest-contentful-paint"),
+			getAuditValue(lhr, "speed-index"),
+			getAuditValue(lhr, "total-blocking-time"),
+			getAuditValue(lhr, "interactive"),
 			(lhr.categories?.performance?.score ?? 0) * 100,
 		].join(",");
 
-		writeFileSync(csvPath, readFileSync(csvPath, "utf-8") + row + "\n");
+		writeFileSync(csvPath, `${readFileSync(csvPath, "utf8")}${row}\n`);
 		console.log(`Recorded: ${row}`);
 
 		// Brief pause to let Chrome fully release resources on Windows.
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 	}
 } finally {
-	server.close();
+	httpServer.close();
 }
 
 console.log(`\nDone! Results in ${csvPath}`);

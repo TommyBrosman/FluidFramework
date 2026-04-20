@@ -7,6 +7,17 @@ import type { Linter } from "eslint";
 import { recommended } from "@fluidframework/eslint-config-fluid/flat.mts";
 import sharedConfig from "../../eslint.config.data.mts";
 
-const config: Linter.Config[] = [...recommended, ...sharedConfig];
+const config: Linter.Config[] = [
+	...recommended,
+	...sharedConfig,
+	{
+		files: ["**/*.cjs"],
+		languageOptions: {
+			parserOptions: {
+				tsconfigRootDir: import.meta.dirname,
+			},
+		},
+	},
+];
 
 export default config;

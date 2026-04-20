@@ -14,6 +14,9 @@
  *
  * @see https://github.com/GoogleChrome/lighthouse-ci/blob/main/docs/configuration.md
  */
+
+const { throttleProfiles } = require("./throttleProfiles.cjs");
+
 module.exports = {
 	ci: {
 		collect: {
@@ -29,9 +32,8 @@ module.exports = {
 				onlyCategories: ["performance"],
 				// Use desktop settings to reduce variability in CI.
 				preset: "desktop",
-				// Measure actual page load instead of lantern simulation, which
-				// avoids "not implemented in lantern" errors and gives real timings.
-				throttlingMethod: "provided",
+				// Apply the mobile throttle profile.
+				...throttleProfiles.mobile,
 			},
 		},
 		assert: {
