@@ -252,17 +252,17 @@ function main(argv: string[]): void {
 				checkoutBranch(originalBranch);
 			}
 		} finally {
-			// Restore stashed changes if any were made
+			// Always ensure original branch has fresh dependencies and restore stash if needed
+			console.log("\nEnabling corepack and installing dependencies for original branch...");
+			execSync("corepack enable", {
+				cwd: repoRoot,
+				stdio: "inherit",
+			});
+			execSync("pnpm install", {
+				cwd: repoRoot,
+				stdio: "inherit",
+			});
 			if (hasStash) {
-				console.log("\nEnabling corepack and installing dependencies for original branch...");
-				execSync("corepack enable", {
-					cwd: repoRoot,
-					stdio: "inherit",
-				});
-				execSync("pnpm install", {
-					cwd: repoRoot,
-					stdio: "inherit",
-				});
 				restoreStash();
 			}
 		}
