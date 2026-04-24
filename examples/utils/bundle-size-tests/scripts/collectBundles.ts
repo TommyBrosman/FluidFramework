@@ -5,11 +5,12 @@
 
 import { execSync } from "node:child_process";
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -332,7 +333,11 @@ function saveStats(label: string): void {
 	}
 
 	mkdirSync(labelDirectory, { recursive: true });
-	renameSync(webpackStatsOutputPath, destStatsPath);
+	// Use copy + unlink instead of renameSync because the source and destination
+	// may live on different drives (e.g. D: -> C:\Users\<user>\AppData\Local\Temp),
+	// which causes renameSync to fail with EXDEV on Windows.
+	copyFileSync(webpackStatsOutputPath, destStatsPath);
+	unlinkSync(webpackStatsOutputPath);
 	console.log(`Saved stats to: ${destStatsPath}`);
 }
 
