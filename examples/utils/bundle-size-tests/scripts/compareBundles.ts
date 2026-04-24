@@ -85,11 +85,16 @@ interface BundleStats {
  * @returns Parsed bundle statistics
  */
 function loadStats(analysisDirectory: string, label: string): BundleStats {
-	const statsFilePath = resolve(analysisDirectory, "bundleAnalysis", label, "bundleStats.msp.gz");
+	const statsFilePath = resolve(
+		analysisDirectory,
+		"bundleAnalysis",
+		label,
+		"bundleStats.msp.gz",
+	);
 	if (!existsSync(statsFilePath)) {
 		throw new Error(
 			`Could not find bundle stats at "${statsFilePath}". ` +
-			`Ensure you have built and analyzed bundles with the correct --analysis-dir.`,
+				`Ensure you have built and analyzed bundles with the correct --analysis-dir.`,
 		);
 	}
 
