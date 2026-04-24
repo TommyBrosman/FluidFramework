@@ -296,7 +296,7 @@ function writeOutputFiles(
 function printHelp(): void {
 	console.log(`
 Usage:
-  tsx ./scripts/compareBundles.ts [options]
+  jiti ./scripts/compareBundles.ts [options]
 
 Options:
   --help, -h
@@ -308,8 +308,8 @@ Options:
                           under bundleAnalysis/{label}/ (default: ${defaultAnalysisDirectory})
 
 Examples:
-  tsx ./scripts/compareBundles.ts --base-branch main --current-branch feature/my-changes
-  tsx ./scripts/compareBundles.ts --analysis-dir /some/other/path
+  jiti ./scripts/compareBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/compareBundles.ts --analysis-dir /some/other/path
 `);
 }
 

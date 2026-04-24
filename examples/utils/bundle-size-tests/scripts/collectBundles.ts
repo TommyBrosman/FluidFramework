@@ -22,24 +22,6 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDirectory, "..");
 
 /**
- * Environment for all child processes we spawn.
- *
- * This script is itself launched via `tsx --tsconfig ./tsconfig.scripts.json`
- * (see the `collect:bundles` npm script). tsx propagates that choice to
- * subprocesses via the `TSX_TSCONFIG_PATH` env var. If we inherit it blindly,
- * any child that also runs tsx (e.g. fluid-build -> `tsx scripts/print-configs.ts`
- * in @fluidframework/eslint-config-fluid) will try to load `./tsconfig.scripts.json`
- * relative to its own cwd and fail. We also strip `TSX_TSCONFIG_CONTENT` for the
- * same reason. Everything else is inherited normally.
- */
-const childEnv: NodeJS.ProcessEnv = (() => {
-	const env = { ...process.env };
-	delete env.TSX_TSCONFIG_PATH;
-	delete env.TSX_TSCONFIG_CONTENT;
-	return env;
-})();
-
-/**
  * Gets the repository root directory.
  *
  * @returns The absolute path to the repository root
@@ -47,7 +29,6 @@ const childEnv: NodeJS.ProcessEnv = (() => {
 function getRepoRoot(): string {
 	return execSync("git rev-parse --show-toplevel", {
 		encoding: "utf-8",
-		env: childEnv,
 	}).trim();
 }
 
@@ -120,7 +101,6 @@ function getCurrentBranch(): string {
 	return execSync("git rev-parse --abbrev-ref HEAD", {
 		cwd: repoRoot,
 		encoding: "utf-8",
-		env: childEnv,
 	}).trim();
 }
 
@@ -171,7 +151,6 @@ function stashChanges(marker: string): boolean {
 	const output = execSync(`git stash push -u -m "${marker}"`, {
 		cwd: repoRoot,
 		encoding: "utf-8",
-		env: childEnv,
 	}).trim();
 	if (output.includes("No local changes")) {
 		return false;
@@ -189,7 +168,6 @@ function findStashRefByMarker(marker: string): string | undefined {
 	const list = execSync("git stash list", {
 		cwd: repoRoot,
 		encoding: "utf-8",
-		env: childEnv,
 	});
 	for (const line of list.split("\n")) {
 		if (line.includes(marker)) {
@@ -217,7 +195,6 @@ function popStashByMarker(marker: string): boolean {
 		execSync(`git stash pop ${stashRef}`, {
 			cwd: repoRoot,
 			stdio: "inherit",
-			env: childEnv,
 		});
 		console.log(`Restored stashed changes from ${stashRef}.`);
 		return true;
@@ -240,7 +217,6 @@ function checkoutBranch(branchName: string): void {
 	execSync(`git checkout ${branchName}`, {
 		cwd: repoRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 }
 
@@ -252,12 +228,10 @@ function installDependencies(): void {
 	execSync("corepack enable", {
 		cwd: repoRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 	execSync("pnpm install", {
 		cwd: repoRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 }
 
@@ -283,7 +257,6 @@ function cleanWorkspace(): void {
 	execSync("npm run clean", {
 		cwd: repoRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 }
 
@@ -311,7 +284,6 @@ function buildWorkspace(): void {
 	execSync("npm run build:compile", {
 		cwd: packageRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 }
 
@@ -323,7 +295,6 @@ function buildBundles(): void {
 	execSync("npm run webpack", {
 		cwd: packageRoot,
 		stdio: "inherit",
-		env: childEnv,
 	});
 }
 
@@ -411,7 +382,7 @@ function hasFlag(argv: string[], flagName: string): boolean {
 function printHelp(): void {
 	console.log(`
 Usage:
-  tsx ./scripts/collectBundles.ts [options]
+  jiti ./scripts/collectBundles.ts [options]
 
 Options:
   --help, -h              Show this help text and exit.
@@ -435,11 +406,11 @@ Options:
 Persistent state lives under: ${analysisRoot}
 
 Examples:
-  tsx ./scripts/collectBundles.ts
-  tsx ./scripts/collectBundles.ts --base-branch main --current-branch feature/my-changes
-  tsx ./scripts/collectBundles.ts --clean-analysis-dir
-  tsx ./scripts/collectBundles.ts --skip-clean-build
-  tsx ./scripts/collectBundles.ts --restore-only
+  jiti ./scripts/collectBundles.ts
+  jiti ./scripts/collectBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/collectBundles.ts --clean-analysis-dir
+  jiti ./scripts/collectBundles.ts --skip-clean-build
+  jiti ./scripts/collectBundles.ts --restore-only
 `);
 }
 

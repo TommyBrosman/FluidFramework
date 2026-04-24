@@ -12,23 +12,23 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDirectory, "..");
 
 /**
- * Path to the tsx CLI entrypoint.
+ * Path to the jiti CLI entrypoint.
  *
- * `tsx`'s package.json `exports` map does not expose `./dist/cli.mjs` directly,
+ * `jiti`'s package.json `exports` map does not expose its CLI file directly,
  * but its `bin` field points to it. We resolve the package's own package.json
  * (always exported) and then resolve the bin path relative to that.
  */
-const tsxCliPath = (() => {
+const jitiCliPath = (() => {
 	const req = createRequire(import.meta.url);
-	const tsxPackageJsonPath = req.resolve("tsx/package.json");
+	const jitiPackageJsonPath = req.resolve("jiti/package.json");
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-	const tsxPackageJson = req("tsx/package.json") as { bin?: string | Record<string, string> };
-	const binField = tsxPackageJson.bin;
-	const binRelPath = typeof binField === "string" ? binField : binField?.tsx;
+	const jitiPackageJson = req("jiti/package.json") as { bin?: string | Record<string, string> };
+	const binField = jitiPackageJson.bin;
+	const binRelPath = typeof binField === "string" ? binField : binField?.jiti;
 	if (binRelPath === undefined) {
-		throw new Error("Unable to locate tsx CLI via its package.json bin field.");
+		throw new Error("Unable to locate jiti CLI via its package.json bin field.");
 	}
-	return resolve(dirname(tsxPackageJsonPath), binRelPath);
+	return resolve(dirname(jitiPackageJsonPath), binRelPath);
 })();
 
 /**
@@ -43,30 +43,20 @@ function hasFlag(argv: string[], flagName: string): boolean {
 }
 
 /**
- * Runs a script with tsx and inherited stdio.
+ * Runs a script with jiti and inherited stdio.
  *
- * Invokes the local tsx CLI directly via `process.execPath` to avoid relying
- * on `tsx` being on PATH (which is flaky on Windows / npm script contexts).
+ * Invokes the local jiti CLI directly via `process.execPath` to avoid relying
+ * on `jiti` being on PATH (which is flaky on Windows / npm script contexts).
  *
  * @param scriptName - Script file name under ./scripts/
  * @param scriptArgs - Arguments to forward to the script
  */
 function runScript(scriptName: string, scriptArgs: string[]): void {
 	const scriptPath = resolve(scriptDirectory, scriptName);
-	const result = spawnSync(
-		process.execPath,
-		[
-			tsxCliPath,
-			"--tsconfig",
-			resolve(packageRoot, "tsconfig.scripts.json"),
-			scriptPath,
-			...scriptArgs,
-		],
-		{
-			cwd: packageRoot,
-			stdio: "inherit",
-		},
-	);
+	const result = spawnSync(process.execPath, [jitiCliPath, scriptPath, ...scriptArgs], {
+		cwd: packageRoot,
+		stdio: "inherit",
+	});
 
 	if (result.error !== undefined) {
 		throw new Error(
@@ -86,7 +76,7 @@ function runScript(scriptName: string, scriptArgs: string[]): void {
 function printHelp(): void {
 	console.log(`
 Usage:
-  tsx ./scripts/collectAndCompareBundles.ts [options]
+  jiti ./scripts/collectAndCompareBundles.ts [options]
 
 Options:
   --help, -h
@@ -107,11 +97,11 @@ Options:
                           dependencies, and pop the matching stash (if any).
 
 Examples:
-  tsx ./scripts/collectAndCompareBundles.ts
-  tsx ./scripts/collectAndCompareBundles.ts --base-branch main --current-branch feature/my-changes
-  tsx ./scripts/collectAndCompareBundles.ts --clean-analysis-dir --skip-compare
-  tsx ./scripts/collectAndCompareBundles.ts --skip-clean-build
-  tsx ./scripts/collectAndCompareBundles.ts --restore-only
+  jiti ./scripts/collectAndCompareBundles.ts
+  jiti ./scripts/collectAndCompareBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/collectAndCompareBundles.ts --clean-analysis-dir --skip-compare
+  jiti ./scripts/collectAndCompareBundles.ts --skip-clean-build
+  jiti ./scripts/collectAndCompareBundles.ts --restore-only
 `);
 }
 
