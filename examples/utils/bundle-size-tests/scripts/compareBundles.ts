@@ -78,42 +78,18 @@ interface BundleStats {
 }
 
 /**
- * Generates candidate file paths for bundle stats files in order of preference.
- * Tries multiple possible locations to handle different directory structures.
- *
- * @param analysisDirectory - The base analysis directory containing bundle stats
- * @param label - The label suffix used to identify the specific stats
- * @returns Array of candidate file paths to check in order
- */
-function getStatsFileCandidates(analysisDirectory: string, label: string): string[] {
-	return [
-		resolve(analysisDirectory, `bundleAnalysis.${label}`, "bundleStats.msp.gz"),
-		resolve(analysisDirectory, "bundleAnalysis", label, "bundleStats.msp.gz"),
-		resolve(analysisDirectory, "bundleAnalysis", "bundleStats.msp.gz"),
-	];
-}
-
-/**
  * Loads and deserializes bundle statistics from a MessagePack-compressed file.
- * Attempts multiple file locations and throws an error if stats cannot be found.
  *
  * @param analysisDirectory - The base analysis directory
- * @param label - The label suffix used to identify the specific stats
+ * @param label - The label subdirectory (typically derived from branch name)
  * @returns Parsed bundle statistics
  */
 function loadStats(analysisDirectory: string, label: string): BundleStats {
-	const candidates = getStatsFileCandidates(analysisDirectory, label);
-	const statsFilePath = candidates.find((candidate) => existsSync(candidate));
-	if (statsFilePath === undefined) {
-		const expectedPaths = candidates.map((candidate) => `  - ${candidate}`).join("\n");
+	const statsFilePath = resolve(analysisDirectory, "bundleAnalysis", label, "bundleStats.msp.gz");
+	if (!existsSync(statsFilePath)) {
 		throw new Error(
-			[
-				`Could not find bundle stats for label "${label}".`,
-				"Checked:",
-				expectedPaths,
-				"",
-				"If your base stats are stored in a different location, pass --base-label or --analysis-dir explicitly.",
-			].join("\n"),
+			`Could not find bundle stats at "${statsFilePath}". ` +
+			`Ensure you have built and analyzed bundles with the correct --analysis-dir.`,
 		);
 	}
 
@@ -247,23 +223,13 @@ interface Options {
 	baseBranch: string;
 	/** Branch name for the current build (default: current branch or BUILD_SOURCEBRANCHNAME) */
 	currentBranch: string;
-	/** Label suffix for base stats files (default: "parent") */
-	baseLabel: string;
-	/** Label suffix for current stats files (default: "current") */
-	currentLabel: string;
-	/** Directory containing bundleAnalysis folders (default: examples/utils/bundle-size-tests) */
+	/** Parent directory where bundleStats.msp.gz files are stored under bundleAnalysis/{label}/ (default: examples/utils/bundle-size-tests) */
 	analysisDirectory: string;
-	/** Directory where comparison output files are written (default: analysis-dir/bundleAnalysis) */
-	outputDirectory: string;
-	/** Build output directory for base gzip size comparison (default: analysis-dir/bundleAnalysis/<base-label>/build) */
-	baseBuildDirectory: string;
-	/** Build output directory for current gzip size comparison (default: analysis-dir/bundleAnalysis/current/build) */
-	currentBuildDirectory: string;
 }
 
 /**
  * Parses command-line arguments into an Options object.
- * Provides defaults for all options and reads BUILD_SOURCEBRANCHNAME environment variable.
+ * Reads BUILD_SOURCEBRANCHNAME environment variable for current branch if not provided.
  *
  * @param argv - The command-line argument list
  * @returns Parsed options with defaults applied
@@ -274,32 +240,11 @@ function parseOptions(argv: string[]): Options {
 		getOptionValue(argv, "--current-branch") ??
 		process.env.BUILD_SOURCEBRANCHNAME ??
 		"current";
-	const baseLabel = getOptionValue(argv, "--base-label") ?? "parent";
-	const currentLabel = getOptionValue(argv, "--current-label") ?? "current";
 	const analysisDirectory = resolve(
 		getOptionValue(argv, "--analysis-dir") ?? defaultAnalysisDirectory,
 	);
-	const outputDirectory = resolve(
-		getOptionValue(argv, "--output-dir") ?? `${analysisDirectory}/bundleAnalysis`,
-	);
-	const baseBuildDirectory = resolve(
-		getOptionValue(argv, "--base-build-dir") ??
-			`${analysisDirectory}/bundleAnalysis/${baseLabel}/build`,
-	);
-	const currentBuildDirectory = resolve(
-		getOptionValue(argv, "--current-build-dir") ?? `${analysisDirectory}/bundleAnalysis/current/build`,
-	);
 
-	return {
-		baseBranch,
-		currentBranch,
-		baseLabel,
-		currentLabel,
-		analysisDirectory,
-		outputDirectory,
-		baseBuildDirectory,
-		currentBuildDirectory,
-	};
+	return { baseBranch, currentBranch, analysisDirectory };
 }
 
 /**
@@ -348,22 +293,13 @@ Options:
   --help, -h
     Show this help text and exit.
 
-  --base-branch <name>         Base branch label in output (default: main)
-  --current-branch <name>      Current branch label in output (default: BUILD_SOURCEBRANCHNAME or current)
-  --base-label <name>          Base stats directory suffix (default: parent)
-  --current-label <name>       Current stats directory suffix (default: current)
-
-  --analysis-dir <path>        Directory containing bundleAnalysis with stats subdirectories
-                               (default: examples/utils/bundle-size-tests)
-  --output-dir <path>          Directory where comparison outputs are written
-                               (default: <analysis-dir>/bundleAnalysis)
-  --base-build-dir <path>      Build output directory used for base gzip comparison
-                               (default: <analysis-dir>/bundleAnalysis/<base-label>/build)
-  --current-build-dir <path>   Build output directory used for current gzip comparison
-                               (default: <analysis-dir>/bundleAnalysis/current/build)
+  --base-branch <name>    Base branch name (default: main)
+  --current-branch <name> Current branch name (default: BUILD_SOURCEBRANCHNAME or current)
+  --analysis-dir <path>   Parent directory where bundleStats.msp.gz files are stored
+                          under bundleAnalysis/{label}/ (default: examples/utils/bundle-size-tests)
 
 Examples:
-  tsx ./scripts/compareBundles.ts --base-branch main --current-branch tbrosman/default-field-kinds
+  tsx ./scripts/compareBundles.ts --base-branch main --current-branch feature/my-changes
   tsx ./scripts/compareBundles.ts --analysis-dir examples/utils/bundle-size-tests
 `);
 }
@@ -408,8 +344,15 @@ function main(argv: string[]): void {
 	const options = parseOptions(argv);
 	const reporter = new Reporter();
 
-	const baseStats = loadStats(options.analysisDirectory, options.baseLabel);
-	const currentStats = loadStats(options.analysisDirectory, options.currentLabel);
+	// Derive labels and directories from branch names
+	const baseLabel = sanitizeForFileName(options.baseBranch);
+	const currentLabel = sanitizeForFileName(options.currentBranch);
+	const outputDirectory = resolve(options.analysisDirectory, "bundleAnalysis");
+	const baseBuildDirectory = resolve(outputDirectory, baseLabel, "build");
+	const currentBuildDirectory = resolve(outputDirectory, currentLabel, "build");
+
+	const baseStats = loadStats(options.analysisDirectory, baseLabel);
+	const currentStats = loadStats(options.analysisDirectory, currentLabel);
 
 	const baseAssets = Object.fromEntries(
 		(baseStats.assets ?? [])
@@ -461,8 +404,8 @@ function main(argv: string[]): void {
 		);
 
 		for (const row of changedRows) {
-			const baseGzipSize = gzipSize(resolve(options.baseBuildDirectory, row.name));
-			const currentGzipSize = gzipSize(resolve(options.currentBuildDirectory, row.name));
+			const baseGzipSize = gzipSize(resolve(baseBuildDirectory, row.name));
+			const currentGzipSize = gzipSize(resolve(currentBuildDirectory, row.name));
 
 			if (baseGzipSize !== undefined && currentGzipSize !== undefined) {
 				const diff = currentGzipSize - baseGzipSize;
@@ -516,7 +459,7 @@ function main(argv: string[]): void {
 	}
 
 	writeOutputFiles(
-		options.outputDirectory,
+		outputDirectory,
 		options.baseBranch,
 		options.currentBranch,
 		reporter.toText(),
@@ -524,11 +467,7 @@ function main(argv: string[]): void {
 			comparedAt: new Date().toISOString(),
 			baseBranch: options.baseBranch,
 			currentBranch: options.currentBranch,
-			baseLabel: options.baseLabel,
-			currentLabel: options.currentLabel,
 			analysisDirectory: options.analysisDirectory,
-			baseBuildDirectory: options.baseBuildDirectory,
-			currentBuildDirectory: options.currentBuildDirectory,
 			assets: rows.map((row) => ({
 				name: row.name,
 				baseStatSize: row.baseStatSize,
