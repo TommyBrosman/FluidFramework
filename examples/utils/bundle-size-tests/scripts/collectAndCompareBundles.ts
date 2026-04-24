@@ -96,9 +96,12 @@ Options:
   --current-branch <name> Current branch name (default: current git branch or CI branch)
   --skip-compare          Collect stats only, skip the comparison step
   --clean-analysis-dir    Remove the persistent bundleAnalysis directory before starting
-  --force-clean-build     Run a full workspace clean (fluid-build --task clean) at each
-                          revision before building. By default we rely on fluid-build's
-                          incremental detection.
+  --skip-clean-build      Skip the full workspace clean that normally runs before each
+                          build. By default we run 'fluid-build --task clean' at the
+                          repo root before building each revision so the comparison is
+                          not affected by stale artifacts. Skipping is faster but may
+                          produce incorrect sizes or build errors if incremental build
+                          state from a previous revision interferes with the current one.
   --restore-only          Do not collect or compare. Use the state file left by a previous
                           aborted run to check out the original branch, reinstall
                           dependencies, and pop the matching stash (if any).
@@ -107,7 +110,7 @@ Examples:
   tsx ./scripts/collectAndCompareBundles.ts
   tsx ./scripts/collectAndCompareBundles.ts --base-branch main --current-branch feature/my-changes
   tsx ./scripts/collectAndCompareBundles.ts --clean-analysis-dir --skip-compare
-  tsx ./scripts/collectAndCompareBundles.ts --force-clean-build
+  tsx ./scripts/collectAndCompareBundles.ts --skip-clean-build
   tsx ./scripts/collectAndCompareBundles.ts --restore-only
 `);
 }
@@ -152,7 +155,7 @@ function main(argv: string[]): void {
 	const currentBranch = getOptionValue(argv, "--current-branch");
 	const skipCompare = hasFlag(argv, "--skip-compare");
 	const cleanAnalysisDir = hasFlag(argv, "--clean-analysis-dir");
-	const forceCleanBuildFlag = hasFlag(argv, "--force-clean-build");
+	const skipCleanBuildFlag = hasFlag(argv, "--skip-clean-build");
 
 	const collectArgs: string[] = [];
 	const compareArgs: string[] = [];
@@ -167,8 +170,8 @@ function main(argv: string[]): void {
 	if (cleanAnalysisDir) {
 		collectArgs.push("--clean-analysis-dir");
 	}
-	if (forceCleanBuildFlag) {
-		collectArgs.push("--force-clean-build");
+	if (skipCleanBuildFlag) {
+		collectArgs.push("--skip-clean-build");
 	}
 
 	try {

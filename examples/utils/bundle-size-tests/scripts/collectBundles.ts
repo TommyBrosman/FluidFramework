@@ -270,13 +270,16 @@ function installDependencies(): void {
  *     dependencies, because the `clean` task in fluidBuild.config.cjs has no `^clean`.
  *   - The per-package `clean` npm scripts only remove outputs in their own package.
  *
- * Only runs when --force-clean-build is set. By default we rely on fluid-build's
- * content-hash based incremental detection: when sources change across a git
- * checkout, their hashes differ from the stored `*.done.build.log`, and the
- * affected packages rebuild. This is usually sufficient and much faster.
+ * Runs by default before building each revision so the comparison is not affected
+ * by stale artifacts. Skipped when --skip-clean-build is passed. fluid-build's
+ * content-hash based incremental detection usually rebuilds what changed across
+ * a checkout, but is not always sufficient: stale tsbuildinfo or entrypoint
+ * outputs from a previous revision can cause either build errors or subtly
+ * incorrect bundle contents. The extra clean is worth the time cost for an
+ * accurate comparison.
  */
-function forceCleanBuild(): void {
-	console.log("\nForce-cleaning all workspace build artifacts (fluid-build --task clean)...");
+function cleanWorkspace(): void {
+	console.log("\nCleaning all workspace build artifacts (fluid-build --task clean)...");
 	execSync("npm run clean", {
 		cwd: repoRoot,
 		stdio: "inherit",
@@ -299,8 +302,9 @@ function forceCleanBuild(): void {
  *
  * fluid-build uses content-hash based incremental detection, so after a `git
  * checkout` to a different revision, source hashes differ from the stored
- * `*.done.build.log` and the affected packages rebuild automatically. This
- * means a prior clean is not normally required (see --force-clean-build).
+ * `*.done.build.log` and the affected packages rebuild automatically. This is
+ * usually enough, but not always reliable; see `cleanWorkspace` and the
+ * --skip-clean-build flag.
  */
 function buildWorkspace(): void {
 	console.log("\nCompiling bundle-size-tests and its dependencies...");
@@ -414,12 +418,12 @@ Options:
   --base-branch <name>    Base branch name (default: main)
   --current-branch <name> Current branch name (default: current git branch)
   --clean-analysis-dir    Remove the persistent bundleAnalysis directory before starting
-  --force-clean-build     Run a full workspace clean (fluid-build --task clean) at each
-                          revision before building. By default, we rely on fluid-build's
-                          content-hash based incremental detection, which is usually
-                          sufficient to rebuild only what changed across the checkout.
-                          Use this if you suspect stale artifacts are influencing the
-                          comparison.
+  --skip-clean-build      Skip the full workspace clean that normally runs before each
+                          build. By default we run 'fluid-build --task clean' at the
+                          repo root before building each revision so the comparison is
+                          not affected by stale artifacts. Skipping is faster but may
+                          produce incorrect sizes or build errors if incremental build
+                          state from a previous revision interferes with the current one.
   --restore-only          Do not collect anything. Instead, use the state file left by a
                           previous aborted run to check out the original branch, reinstall
                           dependencies, and pop the matching stash (if any).
@@ -434,7 +438,7 @@ Examples:
   tsx ./scripts/collectBundles.ts
   tsx ./scripts/collectBundles.ts --base-branch main --current-branch feature/my-changes
   tsx ./scripts/collectBundles.ts --clean-analysis-dir
-  tsx ./scripts/collectBundles.ts --force-clean-build
+  tsx ./scripts/collectBundles.ts --skip-clean-build
   tsx ./scripts/collectBundles.ts --restore-only
 `);
 }
@@ -495,7 +499,7 @@ function main(argv: string[]): void {
 	const baseBranch = getOptionValue(argv, "--base-branch") ?? "main";
 	const currentBranch = getOptionValue(argv, "--current-branch") ?? getCurrentBranch();
 	const cleanAnalysisDir = hasFlag(argv, "--clean-analysis-dir");
-	const forceCleanBuildFlag = hasFlag(argv, "--force-clean-build");
+	const skipCleanBuild = hasFlag(argv, "--skip-clean-build");
 	const exitAfterBuild = hasFlag(argv, "--exit-after-build");
 
 	const existingState = readState();
@@ -540,8 +544,8 @@ function main(argv: string[]): void {
 				checkoutBranch(baseBranch);
 				installDependencies();
 			}
-			if (forceCleanBuildFlag) {
-				forceCleanBuild();
+			if (!skipCleanBuild) {
+				cleanWorkspace();
 			}
 			buildWorkspace();
 
@@ -567,8 +571,8 @@ function main(argv: string[]): void {
 				checkoutBranch(currentBranch);
 				installDependencies();
 			}
-			if (forceCleanBuildFlag) {
-				forceCleanBuild();
+			if (!skipCleanBuild) {
+				cleanWorkspace();
 			}
 			buildWorkspace();
 			buildBundles();
