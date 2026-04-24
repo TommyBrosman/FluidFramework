@@ -255,9 +255,9 @@ interface Options {
 	analysisDirectory: string;
 	/** Directory where comparison output files are written (default: analysis-dir/bundleAnalysis) */
 	outputDirectory: string;
-	/** Build output directory for base gzip size comparison (default: analysis-dir/bundleAnalysis.base-label/build) */
+	/** Build output directory for base gzip size comparison (default: analysis-dir/bundleAnalysis/<base-label>/build) */
 	baseBuildDirectory: string;
-	/** Build output directory for current gzip size comparison (default: analysis-dir/build) */
+	/** Build output directory for current gzip size comparison (default: analysis-dir/bundleAnalysis/current/build) */
 	currentBuildDirectory: string;
 }
 
@@ -284,10 +284,10 @@ function parseOptions(argv: string[]): Options {
 	);
 	const baseBuildDirectory = resolve(
 		getOptionValue(argv, "--base-build-dir") ??
-			`${analysisDirectory}/bundleAnalysis.${baseLabel}/build`,
+			`${analysisDirectory}/bundleAnalysis/${baseLabel}/build`,
 	);
 	const currentBuildDirectory = resolve(
-		getOptionValue(argv, "--current-build-dir") ?? `${analysisDirectory}/build`,
+		getOptionValue(argv, "--current-build-dir") ?? `${analysisDirectory}/bundleAnalysis/current/build`,
 	);
 
 	return {
@@ -353,14 +353,14 @@ Options:
   --base-label <name>          Base stats directory suffix (default: parent)
   --current-label <name>       Current stats directory suffix (default: current)
 
-  --analysis-dir <path>        Directory containing bundleAnalysis.<label> folders
+  --analysis-dir <path>        Directory containing bundleAnalysis with stats subdirectories
                                (default: examples/utils/bundle-size-tests)
   --output-dir <path>          Directory where comparison outputs are written
                                (default: <analysis-dir>/bundleAnalysis)
   --base-build-dir <path>      Build output directory used for base gzip comparison
-                               (default: <analysis-dir>/bundleAnalysis.<base-label>/build)
+                               (default: <analysis-dir>/bundleAnalysis/<base-label>/build)
   --current-build-dir <path>   Build output directory used for current gzip comparison
-                               (default: <analysis-dir>/build)
+                               (default: <analysis-dir>/bundleAnalysis/current/build)
 
 Examples:
   tsx ./scripts/compareBundles.ts --base-branch main --current-branch tbrosman/default-field-kinds
