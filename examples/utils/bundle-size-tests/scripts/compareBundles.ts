@@ -413,22 +413,19 @@ function main(argv: string[]): void {
 		);
 
 		for (const row of changedRows) {
-			const baseGzipSize = gzipSize(resolve(baseBuildDirectory, row.name));
-			const currentGzipSize = gzipSize(resolve(currentBuildDirectory, row.name));
-
-			if (baseGzipSize !== undefined && currentGzipSize !== undefined) {
-				const diff = currentGzipSize - baseGzipSize;
-				const line =
-					row.name.padEnd(40) +
-					String(baseGzipSize).padStart(14) +
-					String(currentGzipSize).padStart(14) +
-					`${diff > 0 ? "+" : ""}${diff}`.padStart(12);
-				reporter.print(line);
-				gzipRows.push({ name: row.name, baseGzipSize, currentGzipSize, diff });
-			} else {
-				reporter.print(`${row.name.padEnd(40)}(base/current build not found)`);
-				gzipRows.push({ name: row.name, baseGzipSize, currentGzipSize });
-			}
+			// Missing assets are treated as size 0: an asset present in only one revision
+			// (e.g. webpack auto-generated vendor chunks whose hash-based names change)
+			// represents a genuine delta, not missing data.
+			const baseGzipSize = gzipSize(resolve(baseBuildDirectory, row.name)) ?? 0;
+			const currentGzipSize = gzipSize(resolve(currentBuildDirectory, row.name)) ?? 0;
+			const diff = currentGzipSize - baseGzipSize;
+			const line =
+				row.name.padEnd(40) +
+				String(baseGzipSize).padStart(14) +
+				String(currentGzipSize).padStart(14) +
+				`${diff > 0 ? "+" : ""}${diff}`.padStart(12);
+			reporter.print(line);
+			gzipRows.push({ name: row.name, baseGzipSize, currentGzipSize, diff });
 		}
 	}
 
