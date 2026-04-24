@@ -4,32 +4,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDirectory, "..");
-
-/**
- * Path to the jiti CLI entrypoint.
- *
- * `jiti`'s package.json `exports` map does not expose its CLI file directly,
- * but its `bin` field points to it. We resolve the package's own package.json
- * (always exported) and then resolve the bin path relative to that.
- */
-const jitiCliPath = (() => {
-	const req = createRequire(import.meta.url);
-	const jitiPackageJsonPath = req.resolve("jiti/package.json");
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-	const jitiPackageJson = req("jiti/package.json") as { bin?: string | Record<string, string> };
-	const binField = jitiPackageJson.bin;
-	const binRelPath = typeof binField === "string" ? binField : binField?.jiti;
-	if (binRelPath === undefined) {
-		throw new Error("Unable to locate jiti CLI via its package.json bin field.");
-	}
-	return resolve(dirname(jitiPackageJsonPath), binRelPath);
-})();
 
 /**
  * Checks if a flag is present in the command-line argument list.
@@ -43,20 +22,26 @@ function hasFlag(argv: string[], flagName: string): boolean {
 }
 
 /**
- * Runs a script with jiti and inherited stdio.
+ * Runs a TypeScript script via Node with jiti's ESM register hook.
  *
- * Invokes the local jiti CLI directly via `process.execPath` to avoid relying
- * on `jiti` being on PATH (which is flaky on Windows / npm script contexts).
+ * Using `--import jiti/register` avoids depending on the `jiti` binary being
+ * on PATH (which is flaky on Windows / npm script contexts) while still
+ * routing through a stable, documented entry point exposed by jiti's package
+ * exports map.
  *
  * @param scriptName - Script file name under ./scripts/
  * @param scriptArgs - Arguments to forward to the script
  */
 function runScript(scriptName: string, scriptArgs: string[]): void {
 	const scriptPath = resolve(scriptDirectory, scriptName);
-	const result = spawnSync(process.execPath, [jitiCliPath, scriptPath, ...scriptArgs], {
-		cwd: packageRoot,
-		stdio: "inherit",
-	});
+	const result = spawnSync(
+		process.execPath,
+		["--import", "jiti/register", scriptPath, ...scriptArgs],
+		{
+			cwd: packageRoot,
+			stdio: "inherit",
+		},
+	);
 
 	if (result.error !== undefined) {
 		throw new Error(
