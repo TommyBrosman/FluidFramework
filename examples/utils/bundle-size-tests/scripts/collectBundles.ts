@@ -6,6 +6,7 @@
 import { execSync } from "node:child_process";
 import {
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -77,6 +78,13 @@ const stateFilePath = resolve(analysisRoot, "state.json");
  * `saveStats` moves it out of the package into `bundleAnalysisDirectory`.
  */
 const webpackStatsOutputPath = resolve(packageRoot, "bundleAnalysis", "bundleStats.msp.gz");
+
+/**
+ * Webpack writes the actual JS bundle assets here (inside the package).
+ * `saveStats` copies this directory out so `compareBundles.ts` can compute
+ * gzip sizes for each asset.
+ */
+const webpackBuildOutputPath = resolve(packageRoot, "build");
 
 /**
  * Persistent state saved before we start mutating the working tree.
@@ -339,6 +347,21 @@ function saveStats(label: string): void {
 	copyFileSync(webpackStatsOutputPath, destStatsPath);
 	unlinkSync(webpackStatsOutputPath);
 	console.log(`Saved stats to: ${destStatsPath}`);
+
+	// Also copy webpack's bundle outputs so compareBundles.ts can compute gzip
+	// sizes for changed assets. The destination layout (`<label>/build/<asset>`)
+	// matches what compareBundles.ts expects.
+	if (existsSync(webpackBuildOutputPath)) {
+		const destBuildPath = resolve(labelDirectory, "build");
+		rmSync(destBuildPath, { recursive: true, force: true });
+		cpSync(webpackBuildOutputPath, destBuildPath, { recursive: true });
+		console.log(`Saved build outputs to: ${destBuildPath}`);
+	} else {
+		console.warn(
+			`Warning: webpack build outputs not found at ${webpackBuildOutputPath}; ` +
+				`gzip sizes will be unavailable for label "${label}".`,
+		);
+	}
 }
 
 /**
