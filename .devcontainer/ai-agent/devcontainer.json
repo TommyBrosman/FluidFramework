@@ -5,11 +5,18 @@
 		"dockerfile": "../Dockerfile",
 		"args": {
 			"NODE_VERSION": "24",
-			"AI_READY": "true"
+			// "INSTALL_AGENCY": "true",
+			"INSTALL_REPOVERLAY": "true"
+			// TODO: Figure out the playwright strategy
+			// "INSTALL_PLAYWRIGHT_CLI": "true"
 		}
 	},
-	"runArgs": ["--init"],
-	"overrideCommand": false,
+	"runArgs": [
+		"--init",
+		"--security-opt=seccomp=unconfined",
+		"--security-opt=apparmor=unconfined",
+		"--cap-add=SYS_ADMIN"
+	],
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -19,20 +26,47 @@
 				"MAI-EngineeringSystems.mai-ai-telemetry",
 				"ms-azure-devops.azure-pipelines",
 				"ms-azuretools.vscode-docker",
-				"mutantdino.resourcemonitor"
-			]
+				"mutantdino.resourcemonitor",
+				"vsls-contrib.codetour"
+			],
+			"settings": {
+				"workbench.startupEditor": "none"
+			}
+		},
+		"codespaces": {
+			"openFiles": [".devcontainer/ai-agent/GETTING_STARTED.md"]
 		}
 	},
-	"postCreateCommand": "bash -lc \"scripts/codespace-setup/post-create.sh && . scripts/codespace-setup/ai-setup.sh\"",
+	"containerEnv": {
+		"NODE_VERSION_OVERRIDE": "24",
+		"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"
+	},
+	"onCreateCommand": "bash scripts/codespace-setup/on-create.sh",
+	"postCreateCommand": "bash scripts/codespace-setup/ai-setup.sh",
+	"postStartCommand": {
+		"bwrap-setup": "sudo mount --make-rshared /",
+		"sandbox-tmpdir": "mkdir -p /tmp/claude"
+	},
+	"postAttachCommand": {},
 	"remoteUser": "node",
 	"features": {
-		"github-cli": "latest",
-		"git-lfs": "latest"
+		// Enables docker CLI inside the container
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": false
+		},
+		// Install the github CLI
+		"ghcr.io/devcontainers/features/github-cli:1": {},
+		// Install git lfs
+		"ghcr.io/devcontainers/features/git-lfs:1": {},
+		// Enables SSH connections into the container using `gh codespace ssh`
+		"ghcr.io/devcontainers/features/sshd:1": {
+			"version": "latest"
+		}
 	},
 	// Setting this so Codespaces default settings use it. It's not really *required*, but a clean build
 	// can be lengthy enough that it's convenient.
 	"hostRequirements": {
-		"cpus": 16,
+		"cpus": 32,
 		"memory": "64gb"
 	}
 }

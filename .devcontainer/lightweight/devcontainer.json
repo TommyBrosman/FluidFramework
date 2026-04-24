@@ -8,7 +8,6 @@
 		}
 	},
 	"runArgs": ["--init"],
-	"overrideCommand": false,
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -22,10 +21,18 @@
 			]
 		}
 	},
-	"postCreateCommand": "bash scripts/codespace-setup/post-create.sh",
+	"onCreateCommand": {
+		"node-setup": "bash scripts/codespace-setup/on-create.sh"
+	},
+	"postCreateCommand": {
+		"welcome-notice": "sudo cp .devcontainer/lightweight/first-run-notice.txt /usr/local/etc/vscode-dev-containers/first-run-notice.txt"
+	},
 	"remoteUser": "node",
 	"features": {
-		"git-lfs": "latest"
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": false
+		},
+		"ghcr.io/devcontainers/features/git-lfs:1": {}
 	},
 	"hostRequirements": {
 		"cpus": 4,

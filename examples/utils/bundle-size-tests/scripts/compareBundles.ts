@@ -57,8 +57,8 @@ function hasFlag(argv: string[], flagName: string): boolean {
  * @param value - The string to sanitize
  * @returns The sanitized string safe for use as a filename
  */
-// eslint-disable-next-line unicorn/prefer-string-replace-all
 function sanitizeForFileName(value: string): string {
+	// eslint-disable-next-line unicorn/prefer-string-replace-all
 	return value.replace(/[^\w.-]/g, "_");
 }
 
@@ -266,7 +266,6 @@ function parseOptions(argv: string[]): Options {
  * @param textContent - The formatted text comparison report
  * @param jsonObject - The structured comparison data as a JSON-serializable object
  */
-
 function writeOutputFiles(
 	outputDirectory: string,
 	baseBranch: string,
