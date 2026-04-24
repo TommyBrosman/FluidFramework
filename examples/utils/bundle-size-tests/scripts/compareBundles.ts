@@ -4,14 +4,15 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { decode } from "@msgpack/msgpack";
 
-const scriptDirectory = dirname(fileURLToPath(import.meta.url));
-const defaultAnalysisDirectory = resolve(scriptDirectory, "..");
+// Default to the persistent analysis root used by collectBundles.ts.
+// Kept in the OS temp dir so results survive `git checkout` and `npm run clean`.
+const defaultAnalysisDirectory = resolve(tmpdir(), "fluid-bundle-compare");
 
 /**
  * Extracts the value of a command-line option from the argument list.
@@ -231,7 +232,7 @@ interface Options {
 	baseBranch: string;
 	/** Branch name for the current build (default: current branch or BUILD_SOURCEBRANCHNAME) */
 	currentBranch: string;
-	/** Parent directory where bundleStats.msp.gz files are stored under bundleAnalysis/\{label\}/ (default: examples/utils/bundle-size-tests) */
+	/** Parent directory where bundleStats.msp.gz files are stored under bundleAnalysis/\{label\}/ (default: OS temp dir / fluid-bundle-compare) */
 	analysisDirectory: string;
 }
 
@@ -304,11 +305,11 @@ Options:
   --base-branch <name>    Base branch name (default: main)
   --current-branch <name> Current branch name (default: BUILD_SOURCEBRANCHNAME or current)
   --analysis-dir <path>   Parent directory where bundleStats.msp.gz files are stored
-                          under bundleAnalysis/{label}/ (default: examples/utils/bundle-size-tests)
+                          under bundleAnalysis/{label}/ (default: ${defaultAnalysisDirectory})
 
 Examples:
   tsx ./scripts/compareBundles.ts --base-branch main --current-branch feature/my-changes
-  tsx ./scripts/compareBundles.ts --analysis-dir examples/utils/bundle-size-tests
+  tsx ./scripts/compareBundles.ts --analysis-dir /some/other/path
 `);
 }
 
