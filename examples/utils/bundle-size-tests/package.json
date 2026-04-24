@@ -21,7 +21,7 @@
 		"check:biome": "biome check .",
 		"check:format": "npm run check:biome",
 		"clean": "rimraf --glob build dist lib bundleAnalysis \"**/*.tsbuildinfo\" \"**/*.build.log\" nyc",
-		"compare:bundles": "tsx --tsconfig ./tsconfig.scripts.json ./scripts/compare-bundles.ts",
+		"compare:bundles": "tsx --tsconfig ./tsconfig.scripts.json ./scripts/compareBundles.ts",
 		"eslint": "eslint --quiet --format stylish src scripts",
 		"eslint:fix": "eslint --quiet --format stylish src scripts --fix --fix-type problem,suggestion,layout",
 		"explore:tree": "fluid-build . --task webpack && source-map-explorer ./build/sharedTree.js --html bundleAnalysis/reportTree.html",

@@ -82,8 +82,8 @@ interface BundleStats {
  * Tries multiple possible locations to handle different directory structures.
  *
  * @param analysisDirectory - The base analysis directory containing bundle stats
- * @param label - The label suffix used to identify the specific stats (e.g., "parent", "current")
- * @returns An array of candidate file paths to check in order
+ * @param label - The label suffix used to identify the specific stats
+ * @returns Array of candidate file paths to check in order
  */
 function getStatsFileCandidates(analysisDirectory: string, label: string): string[] {
 	return [
@@ -100,7 +100,6 @@ function getStatsFileCandidates(analysisDirectory: string, label: string): strin
  * @param analysisDirectory - The base analysis directory
  * @param label - The label suffix used to identify the specific stats
  * @returns Parsed bundle statistics
- * @throws Error if bundle stats file cannot be found in any candidate location
  */
 function loadStats(analysisDirectory: string, label: string): BundleStats {
 	const candidates = getStatsFileCandidates(analysisDirectory, label);
@@ -137,47 +136,51 @@ function gzipSize(filePath: string): number | undefined {
 	}
 }
 
-/** Reporter interface for dual console and text file output. */
-interface Reporter {
-	/** Prints a line to both console and internal buffer */
-	print: (line?: string) => void;
-	/** Prints a section header with spacing */
-	section: (title: string) => void;
-	/** Prints a table header with a divider line */
-	tableHeader: (header: string, dividerLength: number) => void;
-	/** Returns all accumulated output as a single text string */
-	toText: () => string;
-}
-
 /**
- * Creates a reporter that outputs to both console and a text buffer.
- * Allows for simultaneous console output and file writing of the same content.
- *
- * @returns A Reporter instance with print, section, tableHeader, and toText methods
+ * Provides dual console and text file output for bundle comparison reports.
  */
-function createReporter(): Reporter {
-	const outputLines: string[] = [];
+class Reporter {
+	private outputLines: string[] = [];
 
-	function print(line = ""): void {
+	/**
+	 * Prints a line to both console and internal buffer.
+	 *
+	 * @param line - The line to print (defaults to empty string)
+	 */
+	print(line = ""): void {
 		console.log(line);
-		outputLines.push(line);
+		this.outputLines.push(line);
 	}
 
-	function section(title: string): void {
-		print();
-		print(title);
+	/**
+	 * Prints a section header with spacing.
+	 *
+	 * @param title - The section title
+	 */
+	section(title: string): void {
+		this.print();
+		this.print(title);
 	}
 
-	function tableHeader(header: string, dividerLength: number): void {
-		print(header);
-		print("-".repeat(dividerLength));
+	/**
+	 * Prints a table header with a divider line.
+	 *
+	 * @param header - The header text
+	 * @param dividerLength - The length of the divider line
+	 */
+	tableHeader(header: string, dividerLength: number): void {
+		this.print(header);
+		this.print("-".repeat(dividerLength));
 	}
 
-	function toText(): string {
-		return `${outputLines.join("\n")}\n`;
+	/**
+	 * Returns all accumulated output as a single text string.
+	 *
+	 * @returns The full text output
+	 */
+	toText(): string {
+		return `${this.outputLines.join("\n")}\n`;
 	}
-
-	return { print, section, tableHeader, toText };
 }
 
 /** Represents a comparison row for a single asset between two builds. */
@@ -339,7 +342,7 @@ function writeOutputFiles(
 function printHelp(): void {
 	console.log(`
 Usage:
-  tsx ./scripts/compare-bundles.ts [options]
+  tsx ./scripts/compareBundles.ts [options]
 
 Options:
   --help, -h
@@ -360,8 +363,8 @@ Options:
                                (default: <analysis-dir>/build)
 
 Examples:
-  tsx ./scripts/compare-bundles.ts --base-branch main --current-branch tbrosman/default-field-kinds
-  tsx ./scripts/compare-bundles.ts --analysis-dir examples/utils/bundle-size-tests
+  tsx ./scripts/compareBundles.ts --base-branch main --current-branch tbrosman/default-field-kinds
+  tsx ./scripts/compareBundles.ts --analysis-dir examples/utils/bundle-size-tests
 `);
 }
 
@@ -392,10 +395,9 @@ interface EntrypointRow {
 /**
  * Main entry point for the bundle comparison script.
  * Loads statistics from base and current builds, compares assets and entrypoints,
- * and generates both console output and file-based reports (text and JSON).
+ * and generates both console and file-based reports (text and JSON).
  *
  * @param argv - The command-line argument list (typically process.argv)
- * @throws Error if bundle stats cannot be found or loaded
  */
 function main(argv: string[]): void {
 	if (hasFlag(argv, "--help") || hasFlag(argv, "-h")) {
@@ -404,7 +406,7 @@ function main(argv: string[]): void {
 	}
 
 	const options = parseOptions(argv);
-	const reporter = createReporter();
+	const reporter = new Reporter();
 
 	const baseStats = loadStats(options.analysisDirectory, options.baseLabel);
 	const currentStats = loadStats(options.analysisDirectory, options.currentLabel);
