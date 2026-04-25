@@ -522,10 +522,7 @@ function main(argv: string[]): void {
 				console.log(`\n${"=".repeat(80)}`);
 				console.log("--exit-after-build: stopping after base-branch build.");
 				console.log(`  Currently checked out: ${getCurrentBranch()}`);
-				console.log(
-					"  State file retained at:",
-					stateFilePath,
-				);
+				console.log("  State file retained at:", stateFilePath);
 				console.log(
 					"  Use --restore-only to return to the original branch and pop the stash.",
 				);

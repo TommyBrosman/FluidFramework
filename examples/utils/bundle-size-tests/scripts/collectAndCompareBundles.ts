@@ -44,9 +44,7 @@ function runScript(scriptName: string, scriptArgs: string[]): void {
 	);
 
 	if (result.error !== undefined) {
-		throw new Error(
-			`Failed to launch script ${scriptName}: ${result.error.message}`,
-		);
+		throw new Error(`Failed to launch script ${scriptName}: ${result.error.message}`);
 	}
 	if (result.status !== 0) {
 		throw new Error(
