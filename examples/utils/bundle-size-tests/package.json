@@ -63,7 +63,6 @@
 		"@fluidframework/bundle-size-tools": "catalog:buildTools",
 		"@fluidframework/eslint-config-fluid": "catalog:eslint",
 		"@mixer/webpack-bundle-compare": "^0.1.0",
-		"@msgpack/msgpack": "^2.8.0",
 		"@types/mocha": "^10.0.10",
 		"@types/node": "catalog:types",
 		"eslint": "catalog:eslint",

@@ -7,9 +7,9 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 
-import { decode } from "@msgpack/msgpack";
+import { decompressStatsFile } from "@fluidframework/bundle-size-tools";
 
 // Default to the persistent analysis root used by collectBundles.ts.
 // Kept in the OS temp dir so results survive `git checkout` and `npm run clean`.
@@ -120,8 +120,22 @@ function loadStats(analysisDirectory: string, label: string): BundleStats {
 	}
 
 	const compressedData = readFileSync(statsFilePath);
-	const decompressedData = gunzipSync(compressedData);
-	return decode(decompressedData) as BundleStats;
+	const fullStats = decompressStatsFile(compressedData);
+	// Project to just the fields we need so the huge `chunks`/`modules` trees
+	// produced by msgpack-lite can be GC'd. Two full webpack stats objects in
+	// memory at once is enough to OOM Node's default 4 GB heap.
+	const slim: BundleStats = {
+		assets: fullStats.assets?.map((a) => ({ name: a.name, size: a.size })),
+		entrypoints: fullStats.entrypoints
+			? Object.fromEntries(
+					Object.entries(fullStats.entrypoints).map(([name, ep]) => [
+						name,
+						{ assets: ep.assets?.map((a) => ({ size: a.size })) },
+					]),
+				)
+			: {},
+	};
+	return slim;
 }
 
 /**
