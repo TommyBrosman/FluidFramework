@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -61,6 +62,22 @@ function hasFlag(argv: string[], flagName: string): boolean {
 function sanitizeForFileName(value: string): string {
 	// eslint-disable-next-line unicorn/prefer-string-replace-all
 	return value.replace(/[^\w.-]/g, "_");
+}
+
+/**
+ * Returns the current git branch name, or undefined if it cannot be determined
+ * (e.g., not in a git work tree).
+ */
+function tryGetCurrentBranch(): string | undefined {
+	try {
+		const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return branch.length > 0 ? branch : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Represents a single asset in a bundle. */
@@ -230,7 +247,7 @@ function formatEntrypointRow(
 interface Options {
 	/** Branch name for the base build (default: "main") */
 	baseBranch: string;
-	/** Branch name for the current build (default: current branch or BUILD_SOURCEBRANCHNAME) */
+	/** Branch name for the current build (auto-detected from git HEAD or BUILD_SOURCEBRANCHNAME) */
 	currentBranch: string;
 	/** Parent directory where bundleStats.msp.gz files are stored under bundleAnalysis/\{label\}/ (default: OS temp dir / fluid-bundle-compare) */
 	analysisDirectory: string;
@@ -238,7 +255,8 @@ interface Options {
 
 /**
  * Parses command-line arguments into an Options object.
- * Reads BUILD_SOURCEBRANCHNAME environment variable for current branch if not provided.
+ * The current branch is auto-detected: BUILD_SOURCEBRANCHNAME (CI) takes precedence,
+ * then the current git branch, falling back to the literal "current".
  *
  * @param argv - The command-line argument list
  * @returns Parsed options with defaults applied
@@ -246,9 +264,7 @@ interface Options {
 function parseOptions(argv: string[]): Options {
 	const baseBranch = getOptionValue(argv, "--base-branch") ?? "main";
 	const currentBranch =
-		getOptionValue(argv, "--current-branch") ??
-		process.env.BUILD_SOURCEBRANCHNAME ??
-		"current";
+		process.env.BUILD_SOURCEBRANCHNAME ?? tryGetCurrentBranch() ?? "current";
 	const analysisDirectory = resolve(
 		getOptionValue(argv, "--analysis-dir") ?? defaultAnalysisDirectory,
 	);
@@ -302,13 +318,13 @@ Options:
   --help, -h
     Show this help text and exit.
 
-  --base-branch <name>    Base branch name (default: main)
-  --current-branch <name> Current branch name (default: BUILD_SOURCEBRANCHNAME or current)
+  --base-branch <name>    Base branch name (default: main). The "current" side is
+                          auto-detected from BUILD_SOURCEBRANCHNAME or git HEAD.
   --analysis-dir <path>   Parent directory where bundleStats.msp.gz files are stored
                           under bundleAnalysis/{label}/ (default: ${defaultAnalysisDirectory})
 
 Examples:
-  jiti ./scripts/compareBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/compareBundles.ts --base-branch main
   jiti ./scripts/compareBundles.ts --analysis-dir /some/other/path
 `);
 }

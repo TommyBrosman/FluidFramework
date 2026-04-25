@@ -67,8 +67,8 @@ Options:
   --help, -h
     Show this help text and exit.
 
-  --base-branch <name>    Base branch name (default: main)
-  --current-branch <name> Current branch name (default: current git branch or CI branch)
+  --base-branch <name>    Base branch name (default: main). The other side of the
+                          comparison is always the currently checked-out branch.
   --skip-compare          Collect stats only, skip the comparison step
   --clean-analysis-dir    Remove the persistent bundleAnalysis directory before starting
   --skip-clean-build      Skip the full workspace clean that normally runs before each
@@ -83,7 +83,7 @@ Options:
 
 Examples:
   jiti ./scripts/collectAndCompareBundles.ts
-  jiti ./scripts/collectAndCompareBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/collectAndCompareBundles.ts --base-branch main
   jiti ./scripts/collectAndCompareBundles.ts --clean-analysis-dir --skip-compare
   jiti ./scripts/collectAndCompareBundles.ts --skip-clean-build
   jiti ./scripts/collectAndCompareBundles.ts --restore-only
@@ -127,7 +127,6 @@ function main(argv: string[]): void {
 	}
 
 	const baseBranch = getOptionValue(argv, "--base-branch");
-	const currentBranch = getOptionValue(argv, "--current-branch");
 	const skipCompare = hasFlag(argv, "--skip-compare");
 	const cleanAnalysisDir = hasFlag(argv, "--clean-analysis-dir");
 	const skipCleanBuildFlag = hasFlag(argv, "--skip-clean-build");
@@ -137,10 +136,6 @@ function main(argv: string[]): void {
 	if (baseBranch !== undefined) {
 		collectArgs.push("--base-branch", baseBranch);
 		compareArgs.push("--base-branch", baseBranch);
-	}
-	if (currentBranch !== undefined) {
-		collectArgs.push("--current-branch", currentBranch);
-		compareArgs.push("--current-branch", currentBranch);
 	}
 	if (cleanAnalysisDir) {
 		collectArgs.push("--clean-analysis-dir");

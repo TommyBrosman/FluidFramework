@@ -37,8 +37,9 @@ const repoRoot = getRepoRoot();
 /**
  * Root of persistent state for collect/compare runs.
  * Lives in the OS temp directory so it survives:
- *   - `git checkout` between branches (which would overwrite in-tree untracked files)
- *   - `npm run clean` (which rimrafs bundleAnalysis/ under the package)
+ *
+ * - `git checkout` between branches (which would overwrite in-tree untracked files)
+ * - `npm run clean` (which rimrafs bundleAnalysis/ under the package)
  */
 const analysisRoot = resolve(tmpdir(), "fluid-bundle-compare");
 
@@ -162,7 +163,7 @@ function stashChanges(marker: string): boolean {
 /**
  * Finds the stash list index for the stash entry containing the given marker in its subject.
  *
- * @returns The stash ref (e.g. "stash@{2}"), or undefined if no matching stash is found.
+ * @returns The stash ref (e.g. `stash@\{2\}`), or undefined if no matching stash is found.
  */
 function findStashRefByMarker(marker: string): string | undefined {
 	const list = execSync("git stash list", {
@@ -171,7 +172,7 @@ function findStashRefByMarker(marker: string): string | undefined {
 	});
 	for (const line of list.split("\n")) {
 		if (line.includes(marker)) {
-			const match = line.match(/^(stash@\{\d+\})/);
+			const match = /^(stash@{\d+})/.exec(line);
 			if (match !== null) {
 				return match[1];
 			}
@@ -240,9 +241,8 @@ function installDependencies(): void {
  * the entire client release group. This is the only reliable way to clear stale
  * build artifacts for every transitive dependency of bundle-size-tests:
  *
- *   - `fluid-build . --task clean` (scoped to this package) does NOT cascade into
- *     dependencies, because the `clean` task in fluidBuild.config.cjs has no `^clean`.
- *   - The per-package `clean` npm scripts only remove outputs in their own package.
+ * - `fluid-build . --task clean` (scoped to this package) does NOT cascade into dependencies, because the `clean` task in fluidBuild.config.cjs has no `^clean`.
+ * - The per-package `clean` npm scripts only remove outputs in their own package.
  *
  * Runs by default before building each revision so the comparison is not affected
  * by stale artifacts. Skipped when --skip-clean-build is passed. fluid-build's
@@ -268,13 +268,12 @@ function cleanWorkspace(): void {
  * produces the JS outputs webpack consumes. We deliberately do NOT run the full
  * `build` task: that also pulls in `lint`, `check:format`, `build:api-reports`,
  * `build:docs`, etc. across every transitive dependency. Those are:
- *   - unnecessary for producing webpack bundles, and
- *   - prone to unrelated failures across revisions (e.g. lint rule changes),
- *     which would make bundle-size comparison impossible whenever any
- *     non-code check happens to be broken at either revision.
  *
- * fluid-build uses content-hash based incremental detection, so after a `git
- * checkout` to a different revision, source hashes differ from the stored
+ * - unnecessary for producing webpack bundles, and
+ * - prone to unrelated failures across revisions (e.g. lint rule changes), which would make bundle-size comparison impossible whenever any non-code check happens to be broken at either revision.
+ *
+ * fluid-build uses content-hash based incremental detection, so after a
+ * `git checkout` to a different revision, source hashes differ from the stored
  * `*.done.build.log` and the affected packages rebuild automatically. This is
  * usually enough, but not always reliable; see `cleanWorkspace` and the
  * --skip-clean-build flag.
@@ -386,8 +385,8 @@ Usage:
 
 Options:
   --help, -h              Show this help text and exit.
-  --base-branch <name>    Base branch name (default: main)
-  --current-branch <name> Current branch name (default: current git branch)
+  --base-branch <name>    Base branch name (default: main). The other side of the
+                          comparison is always the currently checked-out branch.
   --clean-analysis-dir    Remove the persistent bundleAnalysis directory before starting
   --skip-clean-build      Skip the full workspace clean that normally runs before each
                           build. By default we run 'fluid-build --task clean' at the
@@ -407,7 +406,7 @@ Persistent state lives under: ${analysisRoot}
 
 Examples:
   jiti ./scripts/collectBundles.ts
-  jiti ./scripts/collectBundles.ts --base-branch main --current-branch feature/my-changes
+  jiti ./scripts/collectBundles.ts --base-branch main
   jiti ./scripts/collectBundles.ts --clean-analysis-dir
   jiti ./scripts/collectBundles.ts --skip-clean-build
   jiti ./scripts/collectBundles.ts --restore-only
@@ -431,10 +430,10 @@ function restoreFromState(): void {
 	console.log(`  stashed:        ${state.stashed}`);
 
 	const currentBranch = getCurrentBranch();
-	if (currentBranch !== state.originalBranch) {
-		checkoutBranch(state.originalBranch);
-	} else {
+	if (currentBranch === state.originalBranch) {
 		console.log(`Already on original branch (${state.originalBranch}).`);
+	} else {
+		checkoutBranch(state.originalBranch);
 	}
 
 	installDependencies();
@@ -468,7 +467,6 @@ function main(argv: string[]): void {
 	}
 
 	const baseBranch = getOptionValue(argv, "--base-branch") ?? "main";
-	const currentBranch = getOptionValue(argv, "--current-branch") ?? getCurrentBranch();
 	const cleanAnalysisDir = hasFlag(argv, "--clean-analysis-dir");
 	const skipCleanBuild = hasFlag(argv, "--skip-clean-build");
 	const exitAfterBuild = hasFlag(argv, "--exit-after-build");
@@ -538,8 +536,10 @@ function main(argv: string[]): void {
 			buildBundles();
 			saveStats(sanitizeForFileName(baseBranch));
 
-			if (getCurrentBranch() !== currentBranch) {
-				checkoutBranch(currentBranch);
+			// The "current" side of the comparison is always whatever branch was
+			// checked out when this script started. Return to it and rebuild.
+			if (getCurrentBranch() !== originalBranch) {
+				checkoutBranch(originalBranch);
 				installDependencies();
 			}
 			if (!skipCleanBuild) {
@@ -547,11 +547,7 @@ function main(argv: string[]): void {
 			}
 			buildWorkspace();
 			buildBundles();
-			saveStats(sanitizeForFileName(currentBranch));
-
-			if (getCurrentBranch() !== originalBranch) {
-				checkoutBranch(originalBranch);
-			}
+			saveStats(sanitizeForFileName(originalBranch));
 		} finally {
 			if (!exitAfterBuild) {
 				// Always ensure original branch has fresh dependencies and restore stash if needed.
