@@ -3,7 +3,7 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"types": ["node"],
-		"exactOptionalPropertyTypes": false
+		"exactOptionalPropertyTypes": false,
 	},
-	"include": ["scripts/**/*.ts"]
+	"include": ["scripts/**/*.ts"],
 }
