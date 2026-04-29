@@ -4,11 +4,12 @@
  */
 
 /**
- * Analyzes which `@fluidframework/tree` modules end up in the
- * `encapsulated-with-shared-tree` bundle and **why** — i.e. which entry-level
- * API caused each one to be pulled in transitively.
+ * Analyzes which `@fluidframework/tree` modules end up in a scenario's
+ * production bundle, and **why** — i.e. which named import on the
+ * `@fluidframework/tree/legacy` line in the scenario entry caused each module
+ * to be pulled in.
  *
- * Run with:
+ * Usage:
  *
  * ```
  * npx jiti scripts/analyzeTreeReasons.ts [--scenario \<name\>] [--out \<path\>]
@@ -16,61 +17,40 @@
  *
  * What it does:
  *
- * 1. Loads the scenario's webpack config (default scenario:
- *    `encapsulated-with-shared-tree`).
- * 2. Forces `concatenateModules: false` and disables minimization so
- *    per-module reasons are preserved in the stats output. Tree-shaking
- *    (`usedExports`) is left enabled, so only modules that actually survive
- *    tree-shaking are present.
- * 3. Walks the reasons graph backward from each `@fluidframework/tree`
- *    module to the scenario entry to determine which named API on the
- *    `@fluidframework/tree/legacy` import line is responsible.
- * 4. Approximates each tree module's contribution to the production bundle
- *    by minifying its source individually with terser (the same minifier
- *    webpack production uses) and reporting raw + min + gzip bytes.
- * 5. Emits a Markdown report grouping tree modules by entry API.
- *
- * Caveats:
- *
- * - "Parse size" here means the per-module minified byte count. The real
- *   production bundle minifies all modules together, so cross-module
- *   identifier sharing makes individual numbers slightly larger than the
- *   true marginal cost. They are still useful for relative comparisons and
- *   for ordering modules by impact.
- * - When a module is reachable through more than one entry API, it is
- *   attributed to *all* of them. The "uniquely attributable" column shows
- *   bytes that would actually disappear if a single API were removed.
+ * 1. Parses the scenario entry to find the `@fluidframework/tree/legacy`
+ *    import statement and the list of runtime-imported names (type-only
+ *    imports are ignored — they cost nothing at runtime).
+ * 2. For each runtime-imported name, locates the file in the tree dist
+ *    (`packages/dds/tree/lib`) that declares the export (`export class X`,
+ *    `export const X`, `export function X`). That file is the API's "owning
+ *    module".
+ * 3. Builds the scenario's production bundle (`mode: production`,
+ *    `concatenateModules: true`, terser-minified, exactly as the scenario
+ *    config defines), with a source map.
+ * 4. Runs source-map-explorer on the produced bundle to get **real
+ *    post-minification bundle bytes** per source file. These numbers reflect
+ *    what's actually in the shipped bundle (they sum to the bundle size).
+ * 5. Builds a second webpack pass with `concatenateModules: false` so the
+ *    reasons graph can be inspected. From each owning module identified in
+ *    step 2, performs a forward BFS over the reasons graph to collect every
+ *    `packages/dds/tree/lib/` module reachable through it.
+ * 6. Emits a concise Markdown report. Sizes come from step 4 (real bundle
+ *    bytes); attribution comes from step 5.
  */
 
-import { writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 
 import { default as webpack } from "webpack";
 
 const localRequire = createRequire(import.meta.url);
 
-/** Minimal subset of the terser API that this script uses. */
-interface TerserLike {
-	minify(
-		source: string,
-		options: {
-			compress: boolean;
-			mangle: boolean;
-			format: { comments: boolean };
-		},
-	): Promise<{ code?: string }>;
-}
-
 interface Reason {
 	moduleName?: string;
-	moduleIdentifier?: string;
 	userRequest?: string;
-	type?: string;
-	loc?: string;
-	resolvedModule?: string;
 }
 
 interface StatsModule {
@@ -78,7 +58,6 @@ interface StatsModule {
 	identifier?: string;
 	size?: number;
 	reasons?: Reason[];
-	source?: string;
 }
 
 interface CliFlags {
@@ -109,34 +88,33 @@ function parseFlags(): CliFlags {
 				process.exit(0);
 			}
 			default: {
-				// Unknown flag is ignored.
 				break;
 			}
 		}
 	}
-	const __dirname = path.dirname(fileURLToPath(import.meta.url));
-	const repoRoot = path.resolve(__dirname, "..");
 	return {
 		scenario,
 		outPath:
-			outPath ?? path.resolve(repoRoot, "bundleAnalysis", `tree-reasons-${scenario}.md`),
+			outPath ?? path.resolve(packageRoot, "bundleAnalysis", `tree-reasons-${scenario}.md`),
 	};
 }
 
-// jiti factory is loaded dynamically so this script can run from a built copy
-// or via jiti directly.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(packageRoot, "..", "..", "..");
+const treeLibDir = path.resolve(repoRoot, "packages", "dds", "tree", "lib");
+const TREE_LIB_FRAGMENT = "packages/dds/tree/lib/";
+
 type JitiFactory = (root: string, options?: unknown) => (id: string) => unknown;
 
 async function loadScenarioConfig(scenario: string): Promise<webpack.Configuration> {
-	const __dirname = path.dirname(fileURLToPath(import.meta.url));
-	const repoRoot = path.resolve(__dirname, "..");
-	const configPath = path.resolve(repoRoot, "scenarios", scenario, "webpack.config.cts");
+	const configPath = path.resolve(packageRoot, "scenarios", scenario, "webpack.config.cts");
 	const jitiFactory = localRequire("jiti") as JitiFactory;
-	const jiti = jitiFactory(repoRoot, { interopDefault: true });
+	const jiti = jitiFactory(packageRoot, { interopDefault: true });
 	const mod = jiti(configPath) as { default?: webpack.Configuration } | webpack.Configuration;
-	const config =
-		(mod as { default?: webpack.Configuration }).default ?? (mod as webpack.Configuration);
-	return config;
+	return (
+		(mod as { default?: webpack.Configuration }).default ?? (mod as webpack.Configuration)
+	);
 }
 
 async function runWebpack(config: webpack.Configuration): Promise<webpack.StatsCompilation> {
@@ -154,459 +132,529 @@ async function runWebpack(config: webpack.Configuration): Promise<webpack.StatsC
 				reject(new Error(stats.toString({ errors: true, errorDetails: true })));
 				return;
 			}
-			const json = stats.toJson({
-				all: false,
-				modules: true,
-				reasons: true,
-				nestedModules: false,
-				chunks: false,
-				assets: false,
-				ids: true,
-				cachedModules: true,
-				source: true,
-			});
-			resolve(json);
+			resolve(
+				stats.toJson({
+					all: false,
+					modules: true,
+					reasons: true,
+					ids: true,
+					cachedModules: true,
+				}),
+			);
 		});
 	});
 }
 
-const TREE_LIB_FRAGMENT = "packages/dds/tree/lib/";
+/** Pretty short label for a tree module path. */
+function shortName(name: string): string {
+	const idx = name.indexOf(TREE_LIB_FRAGMENT);
+	return idx === -1 ? name : `tree/${name.slice(idx + TREE_LIB_FRAGMENT.length)}`;
+}
 
-/**
- * Returns true if the given module name is from `@fluidframework/tree`
- * (the dist `lib/` of the tree package).
- */
+function formatTreePrefix(isLast: boolean[]): { indent: string; branch: string } {
+	const indent = isLast
+		.slice(0, -1)
+		.map((l) => (l ? "    " : "│   "))
+		.join("");
+	const last = isLast.at(-1);
+	const branch = last === undefined ? "" : last ? "└── " : "├── ";
+	return { indent, branch };
+}
+
 function isTreeModule(name: string | undefined): boolean {
-	if (name === undefined) return false;
-	return name.includes(TREE_LIB_FRAGMENT);
+	return name?.includes(TREE_LIB_FRAGMENT) ?? false;
 }
 
 /**
- * Returns true if the module is the scenario entry index.
+ * Parse the scenario entry source. Returns the list of names imported (as
+ * values, not types) from `@fluidframework/tree/legacy`.
  */
-function isScenarioEntry(name: string | undefined, scenario: string): boolean {
-	if (name === undefined) return false;
-	return name.endsWith(`scenarios/${scenario}/src/index.ts`);
-}
-
-/** Result of {@link approxParseSize}. */
-interface ParseSize {
-	min: number;
-	gz: number;
+function parseEntryImports(scenario: string): { runtime: string[]; typeOnly: string[] } {
+	const entryPath = path.resolve(packageRoot, "scenarios", scenario, "src", "index.ts");
+	const src = readFileSync(entryPath, "utf8");
+	// Find the import block ending with `from "@fluidframework/tree/legacy"`.
+	// Match an `(export|import) { ... } from "@fluidframework/tree/legacy"` block.
+	// `[^}]+` keeps the body within a single brace pair (no other braces nested).
+	const re =
+		/(?:export|import)\s*(?:type\s+)?{([^}]+)}\s*from\s*["']@fluidframework\/tree\/legacy["']/g;
+	const runtime: string[] = [];
+	const typeOnly: string[] = [];
+	for (const match of src.matchAll(re)) {
+		const blockIsTypeOnly = /(?:export|import)\s+type\s+{/.test(match[0]);
+		const body = match[1];
+		// Split on commas. Each item may be `Foo`, `type Foo`, `Foo as Bar`, `type Foo as Bar`.
+		for (const rawItem of body.split(",")) {
+			const item = rawItem.trim();
+			if (item === "") continue;
+			const itemIsType = /^type\s+/.test(item);
+			const cleaned = item.replace(/^type\s+/, "");
+			const name = cleaned.split(/\s+as\s+/u)[0].trim();
+			if (name === "") continue;
+			if (blockIsTypeOnly || itemIsType) typeOnly.push(name);
+			else runtime.push(name);
+		}
+	}
+	return { runtime, typeOnly };
 }
 
 /**
- * Approximate parse size: minify a single module's source with terser and
- * also report gzip of that minified output.
+ * For each runtime-imported name, find the file in the tree dist that
+ * declares the export. Returns a map from API name to absolute module name
+ * (matching the form webpack reports in stats: `../../../packages/dds/tree/lib/...`).
  */
-async function approxParseSize(source: string | undefined): Promise<ParseSize> {
-	if (source === undefined || source === "") {
-		return { min: 0, gz: 0 };
+function findOwningModules(names: string[]): Map<string, string> {
+	const owners = new Map<string, string>();
+	// Use grep to find all `export (class|const|function|let|var) NAME` in the tree dist.
+	for (const name of names) {
+		try {
+			const out = execFileSync(
+				"grep",
+				[
+					"-rlE",
+					`^export (class|const|function|let|var) ${name}\\b`,
+					"--include=*.js",
+					treeLibDir,
+				],
+				{ encoding: "utf8" },
+			).trim();
+			const lines = out.split("\n").filter((s) => s !== "");
+			if (lines.length === 0) {
+				continue;
+			}
+			// Prefer the shortest path (least nested) — that's typically the
+			// declaring file rather than a re-export.
+			const declaring = lines
+				.filter((p) => p.endsWith(".js"))
+				.sort((a, b) => a.length - b.length)[0];
+			if (declaring === undefined) continue;
+			// Convert absolute path to webpack-style relative.
+			const rel = path.relative(packageRoot, declaring).replaceAll(path.sep, "/");
+			owners.set(name, rel.startsWith("..") ? rel : `./${rel}`);
+		} catch {
+			// grep returns non-zero if no match; skip.
+		}
 	}
-	// Resolve terser from the workspace's hoisted pnpm location. terser is a
-	// transitive dep of terser-webpack-plugin; the local `node_modules` of
-	// this package may not have it as a direct dependency.
-	let terser: TerserLike;
-	try {
-		const resolved = localRequire.resolve("terser", {
-			paths: [path.resolve("/workspaces/FluidFramework/node_modules")],
-		});
-		terser = localRequire(resolved) as TerserLike;
-	} catch {
-		terser = localRequire("terser") as TerserLike;
-	}
-	const result = await terser.minify(source, {
-		compress: true,
-		mangle: true,
-		format: { comments: false },
-	});
-	const minSrc = result.code ?? "";
-	return {
-		min: Buffer.byteLength(minSrc, "utf8"),
-		gz: gzipSync(Buffer.from(minSrc, "utf8")).length,
-	};
+	return owners;
 }
 
 /**
- * Build maps from a flat module list:
- * - `byName`: name -\> module
- * - `parents`: child name -\> set of parent names
- * - `children`: parent name -\> set of child names
- * - `reasonEdge`: child -\> parent -\> first reason linking them
+ * Build forward (parent -\> children) and reverse (child -\> parents) edge maps
+ * from a flat module list.
  */
 interface Graph {
-	byName: Map<string, StatsModule>;
 	parents: Map<string, Set<string>>;
 	children: Map<string, Set<string>>;
-	reasonEdge: Map<string, Map<string, Reason>>;
-}
-
-function getOrCreateSet<K>(map: Map<K, Set<string>>, key: K): Set<string> {
-	let v = map.get(key);
-	if (v === undefined) {
-		v = new Set();
-		map.set(key, v);
-	}
-	return v;
-}
-
-function getOrCreateMap<K, V>(map: Map<K, Map<string, V>>, key: K): Map<string, V> {
-	let v = map.get(key);
-	if (v === undefined) {
-		v = new Map();
-		map.set(key, v);
-	}
-	return v;
 }
 
 function buildGraph(modules: StatsModule[]): Graph {
-	const byName = new Map<string, StatsModule>();
 	const parents = new Map<string, Set<string>>();
 	const children = new Map<string, Set<string>>();
-	const reasonEdge = new Map<string, Map<string, Reason>>();
-	for (const m of modules) {
-		if (m.name === undefined) continue;
-		byName.set(m.name, m);
-	}
+	const ensure = (m: Map<string, Set<string>>, k: string): Set<string> => {
+		let v = m.get(k);
+		if (v === undefined) {
+			v = new Set();
+			m.set(k, v);
+		}
+		return v;
+	};
 	for (const m of modules) {
 		if (m.name === undefined) continue;
 		for (const r of m.reasons ?? []) {
 			const parent = r.moduleName;
 			if (parent === undefined) continue;
-			getOrCreateSet(parents, m.name).add(parent);
-			getOrCreateSet(children, parent).add(m.name);
-			const edges = getOrCreateMap(reasonEdge, m.name);
-			// First reason wins per parent (good enough for attribution).
-			if (!edges.has(parent)) {
-				edges.set(parent, r);
-			}
+			ensure(parents, m.name).add(parent);
+			ensure(children, parent).add(m.name);
 		}
 	}
-	return { byName, parents, children, reasonEdge };
-}
-
-interface AttributionResult {
-	/** entry-API root modules (level-1 children of the legacy barrel) */
-	apiRoots: string[];
-	/** child name -\> set of apiRoot names reachable to it */
-	attribution: Map<string, Set<string>>;
+	return { parents, children };
 }
 
 /**
- * BFS forward from the scenario entry, collecting every module reachable.
- *
- * The entry import line for `@fluidframework/tree/legacy` resolves to a
- * single barrel module (e.g. `packages/dds/tree/lib/legacy.js`). To attribute
- * downstream modules by named API, we use that barrel's level-1 children as
- * "API roots" — each one corresponds (more or less) to a re-exported API on
- * the import line. Each downstream tree module is then tagged with every
- * apiRoot from which it is forward-reachable.
+ * BFS forward from `start`, returning every tree module reachable.
  */
-function computeAttribution(graph: Graph, scenarioEntryName: string): AttributionResult {
-	const visited = new Set<string>();
-	const queue: string[] = [scenarioEntryName];
-	while (queue.length > 0) {
-		const cur = queue.shift();
-		if (cur === undefined || visited.has(cur)) continue;
-		visited.add(cur);
-		for (const c of graph.children.get(cur) ?? []) queue.push(c);
-	}
-
-	// Find the tree legacy barrel: a tree module imported directly by the entry.
-	let legacyBarrel: string | undefined;
-	for (const name of visited) {
-		if (!isTreeModule(name)) continue;
-		const ps = graph.parents.get(name) ?? new Set();
-		if (ps.has(scenarioEntryName)) {
-			legacyBarrel = name;
-			break;
+function reachableTreeModules(graph: Graph, start: string): Set<string> {
+	const seen = new Set<string>();
+	const stack = [start];
+	while (stack.length > 0) {
+		const cur = stack.pop();
+		if (cur === undefined || seen.has(cur)) continue;
+		seen.add(cur);
+		for (const c of graph.children.get(cur) ?? []) {
+			stack.push(c);
 		}
 	}
-	if (legacyBarrel === undefined) {
-		throw new Error("Could not find @fluidframework/tree barrel reachable from entry");
-	}
+	const out = new Set<string>();
+	for (const n of seen) if (isTreeModule(n)) out.add(n);
+	return out;
+}
 
-	const apiRoots = [...(graph.children.get(legacyBarrel) ?? [])].filter(isTreeModule);
+/** source-map-explorer JSON shape (subset). */
+interface SmeBundleResult {
+	bundleName: string;
+	totalBytes: number;
+	mappedBytes: number;
+	files: Record<string, { size: number }>;
+}
+interface SmeResult {
+	results: SmeBundleResult[];
+}
 
-	const attribution = new Map<string, Set<string>>();
-	for (const root of apiRoots) {
-		const stack: string[] = [root];
-		const seen = new Set<string>();
-		while (stack.length > 0) {
-			const cur = stack.pop();
-			if (cur === undefined || seen.has(cur)) continue;
-			seen.add(cur);
-			if (isTreeModule(cur)) {
-				getOrCreateSet(attribution, cur).add(root);
-			}
-			for (const c of graph.children.get(cur) ?? []) {
-				if (visited.has(c)) stack.push(c);
-			}
+/**
+ * Run source-map-explorer on the bundle and return a map from tree-module
+ * stats name (e.g. `../../../packages/dds/tree/lib/foo.js`) to bundle bytes.
+ */
+function smeSizesByTreeModule(
+	bundlePath: string,
+	scenario: string,
+): { sizes: Map<string, number>; total: number; treeTotal: number } {
+	const tmpJson = path.resolve("/tmp", `sme-${scenario}.json`);
+	execFileSync(
+		"npx",
+		["source-map-explorer", "--no-border-checks", "--json", tmpJson, bundlePath],
+		{ cwd: packageRoot, stdio: "ignore" },
+	);
+	const j = JSON.parse(readFileSync(tmpJson, "utf8")) as SmeResult;
+	const sizes = new Map<string, number>();
+	let total = 0;
+	let treeTotal = 0;
+	for (const result of j.results) {
+		total = result.totalBytes;
+		for (const [file, info] of Object.entries(result.files)) {
+			// source-map-explorer keys look like:
+			//   webpack://encapsulatedWithSharedTree/packages/dds/tree/src/foo.ts
+			// We want the same module key used in webpack stats:
+			//   ../../../packages/dds/tree/lib/foo.js
+			// Map src/<x>.ts -> lib/<x>.js for tree.
+			const idx = file.indexOf("packages/dds/tree/src/");
+			if (idx === -1) continue;
+			const subpath = file
+				.slice(idx + "packages/dds/tree/src/".length)
+				.replace(/\.tsx?$/, ".js");
+			const statsName = `../../../packages/dds/tree/lib/${subpath}`;
+			sizes.set(statsName, (sizes.get(statsName) ?? 0) + info.size);
+			treeTotal += info.size;
 		}
 	}
-
-	return { apiRoots, attribution };
+	return { sizes, total, treeTotal };
 }
 
-/** Pretty short label for a module name. */
-function shortName(name: string): string {
-	const idx = name.indexOf(TREE_LIB_FRAGMENT);
-	if (idx === -1) return name;
-	return `tree/${name.slice(idx + TREE_LIB_FRAGMENT.length)}`;
-}
-
-/** Pretty entry-API label by inspecting the level-1 root module path. */
-function apiLabel(root: string): string {
-	const short = shortName(root);
-	const base = path.basename(short, ".js");
-	return `${base} (${short})`;
-}
-
-interface ApiSummary {
-	root: string;
-	modules: string[];
-	sumMin: number;
-	sumGz: number;
-	uniqueMin: number;
-	uniqueGz: number;
+interface ApiRow {
+	api: string;
+	owner: string | undefined;
+	ownerSize: number;
+	reachableModules: string[];
+	reachableSize: number;
+	uniqueSize: number;
 }
 
 function buildReport(
 	scenario: string,
+	flags: { runtime: string[]; typeOnly: string[] },
+	owners: Map<string, string>,
 	graph: Graph,
-	treeModules: StatsModule[],
-	apiRoots: string[],
-	attribution: Map<string, Set<string>>,
-	sizeByName: Map<string, { raw: number; min: number; gz: number }>,
+	apiRows: ApiRow[],
+	moduleSizes: Map<string, number>,
+	bundleTotal: number,
+	treeTotal: number,
+	bundlePath: string,
 ): string {
 	const lines: string[] = [];
-	lines.push(`# Tree module attribution — scenario \`${scenario}\``);
+	lines.push(`# Tree imports — scenario \`${scenario}\``);
 	lines.push("");
 	lines.push(
-		"Generated by `scripts/analyzeTreeReasons.ts`. Each entry API on the scenario's `@fluidframework/tree/legacy` import line is shown together with the set of `@fluidframework/tree` modules reachable from it through the webpack reasons graph.",
+		`Bundle: \`${path.basename(bundlePath)}\` — ${bundleTotal.toLocaleString()} B total · ${treeTotal.toLocaleString()} B from \`@fluidframework/tree\` (${((treeTotal / bundleTotal) * 100).toFixed(1)}%).`,
 	);
 	lines.push("");
-	lines.push("**Per-module sizes**:");
-	lines.push("- `raw` — pre-minified source bytes (post-loader).");
 	lines.push(
-		"- `min` — bytes after minifying that single module's source with terser (compress + mangle).",
+		`Scenario imports from \`@fluidframework/tree/legacy\`: **${flags.runtime.length} runtime**, **${flags.typeOnly.length} type-only**.`,
 	);
-	lines.push("- `gz` — gzip of the per-module minified output.");
 	lines.push("");
 	lines.push(
-		"Per-module minification overestimates the marginal cost slightly vs. the real bundle, where adjacent modules share identifiers and terser removes more — useful for relative comparisons and ordering.",
+		"All sizes below are **real production bundle bytes** (post-minify, post-concat) attributed via the source map.",
 	);
 	lines.push("");
 
-	const totalRaw = treeModules.reduce(
-		(s, m) => s + (m.name === undefined ? 0 : (sizeByName.get(m.name)?.raw ?? 0)),
-		0,
-	);
-	const totalMin = treeModules.reduce(
-		(s, m) => s + (m.name === undefined ? 0 : (sizeByName.get(m.name)?.min ?? 0)),
-		0,
-	);
-	const totalGz = treeModules.reduce(
-		(s, m) => s + (m.name === undefined ? 0 : (sizeByName.get(m.name)?.gz ?? 0)),
-		0,
-	);
-	lines.push(`## Totals (all tree modules in bundle)`);
+	lines.push(`## Per-API summary`);
 	lines.push("");
-	lines.push(`- Modules: **${treeModules.length}**`);
-	lines.push(`- Raw source: **${totalRaw.toLocaleString()} B**`);
-	lines.push(`- Per-module min: **${totalMin.toLocaleString()} B**`);
-	lines.push(`- Per-module min+gz: **${totalGz.toLocaleString()} B**`);
-	lines.push("");
-
-	lines.push(`## Tree modules grouped by entry API`);
-	lines.push("");
-
-	const summaries: ApiSummary[] = apiRoots.map((root) => ({
-		root,
-		modules: [],
-		sumMin: 0,
-		sumGz: 0,
-		uniqueMin: 0,
-		uniqueGz: 0,
-	}));
-	const summaryByRoot = new Map(summaries.map((s) => [s.root, s]));
-	for (const [child, roots] of attribution) {
-		const sz = sizeByName.get(child) ?? { raw: 0, min: 0, gz: 0 };
-		for (const r of roots) {
-			const s = summaryByRoot.get(r);
-			if (s === undefined) continue;
-			s.modules.push(child);
-			s.sumMin += sz.min;
-			s.sumGz += sz.gz;
-			if (roots.size === 1) {
-				s.uniqueMin += sz.min;
-				s.uniqueGz += sz.gz;
-			}
-		}
-	}
-	summaries.sort((a, b) => b.sumMin - a.sumMin);
-
 	lines.push(
-		"| Entry API root module | Modules | Reachable min (B) | Reachable gz (B) | Unique min (B) | Unique gz (B) |",
+		"- `Reachable B` — bytes of all tree modules forward-reachable from this API's owning module.",
 	);
-	lines.push("|---|---:|---:|---:|---:|---:|");
-	for (const s of summaries) {
+	lines.push(
+		"- `Unique B` — bytes that are reachable **only** from this API (no other listed API reaches them). Removing the API would let tree-shaking drop these.",
+	);
+	lines.push(
+		"- `Modules` — count of tree modules forward-reachable from this API's owning module.",
+	);
+	lines.push("");
+	lines.push("| API | Owner module | Reachable B | Unique B | Modules |");
+	lines.push("|---|---|---:|---:|---:|");
+	const sorted = [...apiRows].sort((a, b) => b.reachableSize - a.reachableSize);
+	for (const r of sorted) {
+		const owner = r.owner === undefined ? "(not found)" : shortName(r.owner);
 		lines.push(
-			`| \`${shortName(s.root)}\` | ${s.modules.length} | ${s.sumMin.toLocaleString()} | ${s.sumGz.toLocaleString()} | ${s.uniqueMin.toLocaleString()} | ${s.uniqueGz.toLocaleString()} |`,
+			`| \`${r.api}\` | \`${owner}\` | ${r.reachableSize.toLocaleString()} | ${r.uniqueSize.toLocaleString()} | ${r.reachableModules.length} |`,
 		);
 	}
 	lines.push("");
 
-	for (const s of summaries) {
-		lines.push(`### ${apiLabel(s.root)}`);
-		lines.push("");
+	if (flags.typeOnly.length > 0) {
 		lines.push(
-			`Reachable tree modules: **${s.modules.length}** · summed min **${s.sumMin.toLocaleString()} B** / gz **${s.sumGz.toLocaleString()} B** · unique-to-this-API min **${s.uniqueMin.toLocaleString()} B** / gz **${s.uniqueGz.toLocaleString()} B**`,
+			`Type-only imports (cost 0 B): ${flags.typeOnly.map((n) => `\`${n}\``).join(", ")}.`,
 		);
 		lines.push("");
-		lines.push("| Module | raw (B) | min (B) | gz (B) | also reached by |");
-		lines.push("|---|---:|---:|---:|---|");
-		const rows = [...new Set(s.modules)]
-			.map((name) => {
-				const sz = sizeByName.get(name) ?? { raw: 0, min: 0, gz: 0 };
-				const others = [...(attribution.get(name) ?? [])].filter((r) => r !== s.root);
-				return { name, sz, others };
-			})
-			.sort((a, b) => b.sz.min - a.sz.min);
-		for (const r of rows) {
-			const othersLabel =
-				r.others.length === 0 ? "—" : r.others.map((o) => `\`${shortName(o)}\``).join(", ");
-			lines.push(
-				`| \`${shortName(r.name)}\` | ${r.sz.raw.toLocaleString()} | ${r.sz.min.toLocaleString()} | ${r.sz.gz.toLocaleString()} | ${othersLabel} |`,
+	}
+
+	lines.push(`## Per-API import chains`);
+	lines.push("");
+	lines.push(
+		"For each API, this shows the **import chain** — the tree of modules reached starting from the API's owning module. Each node is printed at most once across the whole tree, in DFS-preorder of the first API to reach it. Children are sorted by descending bundle bytes.",
+	);
+	lines.push("");
+	lines.push(
+		"Notation: `A B  module/path  [shared: api1, api2]` where `A` = bytes of this module and `B` = sum of bytes for this module plus all of its descendants printed beneath it. Lines marked `(see above)` are modules already printed earlier in the same tree or by a previous API; they are not re-expanded.",
+	);
+	lines.push("");
+
+	const printedGlobally = new Set<string>();
+	const treeChildren = (m: string): string[] =>
+		[...(graph.children.get(m) ?? [])].filter((c) => isTreeModule(c));
+
+	// Compute subtree-byte totals (treating the spanning DFS tree from this
+	// root, where each module is counted once; descendants encountered later
+	// down a sibling branch are shared and counted there).
+	function computeSubtreeSize(root: string, alreadyPrinted: Set<string>): Map<string, number> {
+		const subtree = new Map<string, number>();
+		const counted = new Set<string>(alreadyPrinted);
+		function dfs(node: string): number {
+			if (counted.has(node)) return 0;
+			counted.add(node);
+			let total = moduleSizes.get(node) ?? 0;
+			const kids = treeChildren(node).sort(
+				(a, b) => (moduleSizes.get(b) ?? 0) - (moduleSizes.get(a) ?? 0),
 			);
+			for (const k of kids) total += dfs(k);
+			subtree.set(node, total);
+			return total;
+		}
+		dfs(root);
+		return subtree;
+	}
+
+	function sharersOf(m: string, currentApi: string): string[] {
+		return sorted
+			.filter((other) => other.api !== currentApi && other.reachableModules.includes(m))
+			.map((other) => other.api);
+	}
+
+	function dfsPrint(
+		node: string,
+		isLast: boolean[],
+		subtree: Map<string, number>,
+		currentApi: string,
+	): void {
+		const { indent, branch } = formatTreePrefix(isLast);
+		if (printedGlobally.has(node)) {
+			lines.push(`${indent}${branch}\`${shortName(node)}\` (see above)`);
+			return;
+		}
+		printedGlobally.add(node);
+		const ownB = moduleSizes.get(node) ?? 0;
+		const subB = subtree.get(node) ?? ownB;
+		const sh = sharersOf(node, currentApi);
+		const sharedLabel = sh.length === 0 ? "" : `  [shared: ${sh.join(", ")}]`;
+		lines.push(
+			`${indent}${branch}\`${shortName(node)}\`  ${ownB.toLocaleString()} B / Σ ${subB.toLocaleString()} B${sharedLabel}`,
+		);
+		const kids = treeChildren(node).sort(
+			(a, b) => (subtree.get(b) ?? 0) - (subtree.get(a) ?? 0),
+		);
+		for (let idx = 0; idx < kids.length; idx++) {
+			dfsPrint(kids[idx], [...isLast, idx === kids.length - 1], subtree, currentApi);
+		}
+	}
+
+	for (const r of sorted) {
+		if (r.owner === undefined) {
+			lines.push(`### \`${r.api}\` — owner not located in tree dist`);
+			lines.push("");
+			continue;
+		}
+		lines.push(
+			`### \`${r.api}\` (${shortName(r.owner)}) — ${r.reachableSize.toLocaleString()} B reachable, ${r.uniqueSize.toLocaleString()} B unique`,
+		);
+		lines.push("");
+		const subtree = computeSubtreeSize(r.owner, printedGlobally);
+		lines.push("```");
+		dfsPrint(r.owner, [], subtree, r.api);
+		lines.push("```");
+		lines.push("");
+	}
+
+	// Modules that are in the bundle but not attributed to any API
+	// (e.g. side-effect-only imports of barrel modules; should be small).
+	const attributed = new Set<string>();
+	for (const r of apiRows) for (const m of r.reachableModules) attributed.add(m);
+	const orphans = [...moduleSizes.entries()]
+		.filter(([m]) => !attributed.has(m))
+		.sort((a, b) => b[1] - a[1]);
+	if (orphans.length > 0) {
+		lines.push(`## Tree modules in bundle but not attributed`);
+		lines.push("");
+		lines.push(
+			"These tree modules show up in source-map-explorer but no API's owning module reaches them in the reasons graph (typically barrel/side-effect-only modules).",
+		);
+		lines.push("");
+		lines.push("| Module | B |");
+		lines.push("|---|---:|");
+		for (const [m, sz] of orphans) {
+			lines.push(`| \`${shortName(m)}\` | ${sz.toLocaleString()} |`);
 		}
 		lines.push("");
 	}
 
-	const unattributed = treeModules.filter(
-		(m) => m.name !== undefined && !attribution.has(m.name),
-	);
-	if (unattributed.length > 0) {
-		lines.push(`## Tree modules not attributed to a single API root`);
-		lines.push("");
-		lines.push(
-			"Typically: the legacy barrel module itself, and any glue modules pulled in directly by it that don't fall under one of the named re-exports.",
-		);
-		lines.push("");
-		lines.push("| Module | raw (B) | min (B) | gz (B) | reasons |");
-		lines.push("|---|---:|---:|---:|---|");
-		for (const m of unattributed) {
-			if (m.name === undefined) continue;
-			const sz = sizeByName.get(m.name) ?? { raw: 0, min: 0, gz: 0 };
-			const reasons = (m.reasons ?? [])
-				.map((r) => {
-					if (r.moduleName !== undefined && r.moduleName !== "") {
-						return shortName(r.moduleName);
-					}
-					return r.userRequest ?? "(?)";
-				})
-				.filter((v, idx, arr) => arr.indexOf(v) === idx)
-				.slice(0, 5)
-				.map((label) => `\`${label}\``)
-				.join(", ");
-			lines.push(
-				`| \`${shortName(m.name)}\` | ${sz.raw.toLocaleString()} | ${sz.min.toLocaleString()} | ${sz.gz.toLocaleString()} | ${reasons} |`,
-			);
-		}
-		lines.push("");
-	}
-
-	lines.push(`## Reasons graph (immediate parents per tree module)`);
-	lines.push("");
-	lines.push(
-		'For each tree module, the immediate importers are listed (deduped). Useful for spotting a single "pin point" — a module that, if its import were removed or broken into a smaller surface, would let webpack drop the dependent module.',
-	);
-	lines.push("");
-	const sortedTreeMods = [...treeModules].sort((a, b) => {
-		const am = a.name === undefined ? 0 : (sizeByName.get(a.name)?.min ?? 0);
-		const bm = b.name === undefined ? 0 : (sizeByName.get(b.name)?.min ?? 0);
-		return bm - am;
-	});
-	for (const m of sortedTreeMods) {
-		if (m.name === undefined) continue;
-		const sz = sizeByName.get(m.name) ?? { min: 0 };
-		const ps = [...(graph.parents.get(m.name) ?? [])].map((p) => shortName(p)).sort();
-		lines.push(
-			`- \`${shortName(m.name)}\` — ${sz.min.toLocaleString()} B min  ` +
-				`\n  ← ${ps.length === 0 ? "(entry)" : ps.map((p) => `\`${p}\``).join(", ")}`,
-		);
-	}
-	lines.push("");
 	return lines.join("\n");
 }
 
 async function main(): Promise<void> {
 	const flags = parseFlags();
-	console.log(`Loading webpack config for scenario "${flags.scenario}"...`);
-	const config = await loadScenarioConfig(flags.scenario);
 
-	// Force per-module visibility while keeping production tree-shaking semantics.
-	const cfg: webpack.Configuration = {
-		...config,
+	console.log(`[1/5] Parsing scenario entry imports...`);
+	const imports = parseEntryImports(flags.scenario);
+	console.log(`  ${imports.runtime.length} runtime: ${imports.runtime.join(", ")}`);
+	console.log(`  ${imports.typeOnly.length} type-only: ${imports.typeOnly.join(", ")}`);
+
+	console.log(`[2/5] Locating owning modules in tree dist...`);
+	if (!existsSync(treeLibDir)) {
+		throw new Error(`Tree dist not found at ${treeLibDir}. Build @fluidframework/tree first.`);
+	}
+	const owners = findOwningModules(imports.runtime);
+	for (const name of imports.runtime) {
+		const o = owners.get(name);
+		console.log(`  ${name} -> ${o === undefined ? "(not found)" : shortName(o)}`);
+	}
+
+	console.log(`[3/5] Building production bundle...`);
+	const baseConfig = await loadScenarioConfig(flags.scenario);
+	const prodConfig: webpack.Configuration = {
+		...baseConfig,
 		mode: "production",
-		profile: true,
-		optimization: {
-			...config.optimization,
-			concatenateModules: false,
-			minimize: false,
-			usedExports: true,
-		},
 		output: {
-			...config.output,
-			path: path.resolve("/tmp", `analyzeTreeReasons-${flags.scenario}`),
+			...baseConfig.output,
+			path: path.resolve("/tmp", `analyzeTreeReasons-prod-${flags.scenario}`),
 		},
-		plugins: (config.plugins ?? []).filter(
+		plugins: (baseConfig.plugins ?? []).filter(
 			(p: unknown) =>
 				(p as { constructor?: { name?: string } } | null)?.constructor?.name !==
 				"BundleComparisonPlugin",
 		),
 	};
-
-	console.log("Running webpack...");
-	const stats = await runWebpack(cfg);
-	const modules = (stats.modules ?? []) as StatsModule[];
-	console.log(`Webpack produced ${modules.length} modules.`);
-
-	const treeModules = modules.filter((m) => isTreeModule(m.name));
-	console.log(`Of those, ${treeModules.length} are from @fluidframework/tree.`);
-
-	console.log("Building reasons graph...");
-	const graph = buildGraph(modules);
-
-	const entry = modules.find((m) => isScenarioEntry(m.name, flags.scenario));
-	if (entry?.name === undefined) {
-		throw new Error("Could not locate scenario entry module in stats.");
+	await runWebpack(prodConfig);
+	const bundleFile =
+		typeof prodConfig.output?.filename === "string" ? prodConfig.output.filename : undefined;
+	if (bundleFile === undefined) {
+		throw new Error("Could not determine bundle filename from scenario config.");
+	}
+	const outDir = prodConfig.output?.path;
+	if (typeof outDir !== "string") {
+		throw new TypeError("Bundle output path is not a string.");
+	}
+	const bundlePath = path.resolve(outDir, bundleFile);
+	if (!existsSync(bundlePath)) {
+		throw new Error(`Bundle not produced at ${bundlePath}`);
 	}
 
-	console.log("Computing attribution from entry-API roots...");
-	const { apiRoots, attribution } = computeAttribution(graph, entry.name);
-	console.log(`API roots reachable in tree barrel: ${apiRoots.length}`);
+	console.log(`[4/5] Running source-map-explorer for real bundle bytes...`);
+	const { sizes, total, treeTotal } = smeSizesByTreeModule(bundlePath, flags.scenario);
+	console.log(
+		`  Bundle ${total.toLocaleString()} B total, ${treeTotal.toLocaleString()} B from tree (${sizes.size} tree modules).`,
+	);
 
-	console.log("Minifying each tree module to approximate parse size...");
-	const sizeByName = new Map<string, { raw: number; min: number; gz: number }>();
-	let processed = 0;
-	for (const m of treeModules) {
-		processed++;
-		if (processed % 50 === 0) console.log(`  ${processed}/${treeModules.length}`);
-		if (m.name === undefined) continue;
-		const { min, gz } = await approxParseSize(m.source);
-		sizeByName.set(m.name, { raw: m.size ?? 0, min, gz });
+	console.log(`[5/5] Building reasons graph (no concat)...`);
+	const graphConfig: webpack.Configuration = {
+		...baseConfig,
+		mode: "production",
+		profile: true,
+		optimization: {
+			...baseConfig.optimization,
+			concatenateModules: false,
+			minimize: false,
+			usedExports: true,
+		},
+		output: {
+			...baseConfig.output,
+			path: path.resolve("/tmp", `analyzeTreeReasons-graph-${flags.scenario}`),
+		},
+		plugins: (baseConfig.plugins ?? []).filter(
+			(p: unknown) =>
+				(p as { constructor?: { name?: string } } | null)?.constructor?.name !==
+				"BundleComparisonPlugin",
+		),
+	};
+	const stats = await runWebpack(graphConfig);
+	const modules = (stats.modules ?? []) as StatsModule[];
+	const graph = buildGraph(modules);
+	console.log(`  ${modules.length} modules in graph.`);
+
+	// Compute per-API reachable sets.
+	const apiRows: ApiRow[] = [];
+	const reachByApi = new Map<string, Set<string>>();
+	for (const name of imports.runtime) {
+		const owner = owners.get(name);
+		if (owner === undefined) {
+			apiRows.push({
+				api: name,
+				owner: undefined,
+				ownerSize: 0,
+				reachableModules: [],
+				reachableSize: 0,
+				uniqueSize: 0,
+			});
+			continue;
+		}
+		const reach = reachableTreeModules(graph, owner);
+		reach.add(owner);
+		reachByApi.set(name, reach);
+		const reachableSize = [...reach].reduce((s, m) => s + (sizes.get(m) ?? 0), 0);
+		apiRows.push({
+			api: name,
+			owner,
+			ownerSize: sizes.get(owner) ?? 0,
+			reachableModules: [...reach],
+			reachableSize,
+			uniqueSize: 0,
+		});
+	}
+	// Compute unique-to-this-API bytes.
+	for (const row of apiRows) {
+		if (row.owner === undefined) continue;
+		const myReach = reachByApi.get(row.api);
+		if (myReach === undefined) continue;
+		let unique = 0;
+		for (const m of myReach) {
+			let sharedByOther = false;
+			for (const [otherApi, otherReach] of reachByApi) {
+				if (otherApi === row.api) continue;
+				if (otherReach.has(m)) {
+					sharedByOther = true;
+					break;
+				}
+			}
+			if (!sharedByOther) unique += sizes.get(m) ?? 0;
+		}
+		row.uniqueSize = unique;
 	}
 
 	const report = buildReport(
 		flags.scenario,
+		imports,
+		owners,
 		graph,
-		treeModules,
-		apiRoots,
-		attribution,
-		sizeByName,
+		apiRows,
+		sizes,
+		total,
+		treeTotal,
+		bundlePath,
 	);
-
 	writeFileSync(flags.outPath, report);
 	console.log(`\nReport written to: ${flags.outPath}`);
 }
