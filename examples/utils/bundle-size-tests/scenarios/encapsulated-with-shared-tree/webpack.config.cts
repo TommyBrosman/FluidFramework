@@ -84,10 +84,12 @@ const config: webpack.Configuration = {
 			maxChunks: 1,
 		}),
 		// Emits a MessagePack-compressed webpack stats file consumed by
-		// compareBundles.ts. Path matches the one used by the main webpack
-		// config so collectBundle.ts can pick up scenario stats unchanged.
+		// compareBundles.ts. Scenario stats use a scenario-specific filename
+		// (rather than `bundleStats.msp.gz`) so they do not collide with the
+		// main multi-entry webpack config's output, which fluid-build invokes
+		// during this package's compile pipeline.
 		new BundleComparisonPlugin({
-			file: path.resolve(packageRoot, "bundleAnalysis/bundleStats.msp.gz"),
+			file: path.resolve(packageRoot, "bundleAnalysis/scenarioBundleStats.msp.gz"),
 		}),
 	],
 	resolve: {

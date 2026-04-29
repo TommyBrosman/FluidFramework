@@ -142,20 +142,25 @@ function buildBundles(packageRoot: string, scenario: string | undefined): void {
  * @param label - Sanitized label for this build (e.g., "main", "feature_branch").
  * @param sourcePackageRoot - Package root that produced the webpack output.
  * @param scenario - If set, copies bundle assets from
- *   `<sourcePackageRoot>/build/scenarios/<scenario>` instead of
- *   `<sourcePackageRoot>/build`. The stats file path is the same in both
- *   cases (the scenario webpack config writes it to the package's
- *   `bundleAnalysis/bundleStats.msp.gz` to match the main config).
+ *   `<sourcePackageRoot>/build/scenarios/<scenario>` and uses the
+ *   scenario-specific stats filename `scenarioBundleStats.msp.gz`. The main
+ *   webpack config also writes a `bundleStats.msp.gz` during the package's
+ *   compile pipeline; using a separate scenario filename guarantees
+ *   the scenario stats are not silently shadowed by the main config's output.
+ *   Stats are still saved at the canonical destination filename
+ *   `bundleStats.msp.gz` so compareBundles.ts can read them unchanged.
  */
 function saveStats(
 	label: string,
 	sourcePackageRoot: string,
 	scenario: string | undefined,
 ): void {
+	const statsFileName =
+		scenario === undefined ? "bundleStats.msp.gz" : "scenarioBundleStats.msp.gz";
 	const webpackStatsOutputPath = resolve(
 		sourcePackageRoot,
 		"bundleAnalysis",
-		"bundleStats.msp.gz",
+		statsFileName,
 	);
 	const webpackBuildOutputPath =
 		scenario === undefined
@@ -243,8 +248,16 @@ function syncInnerRepoToRevision(revision: string): void {
 
 /**
  * Mirrors `<outerPackageRoot>/scenarios/<scenario>/` into the inner package's
- * `scenarios/` directory so revision-mode builds can use a scenario that does
- * not exist at the base revision.
+ * `scenarios/` directory so revision-mode builds use the scenario definition
+ * from the outer working tree (rather than whatever version, if any, exists
+ * at the base revision).
+ *
+ * The outer working tree is treated as the source of truth for scenarios:
+ * the scenario harness (webpack config, plugins, entry point) is part of the
+ * comparison machinery, not part of the code under comparison. Overlaying
+ * unconditionally guarantees both the local and base bundles are produced
+ * with byte-identical webpack configs, so the diff reflects only the
+ * underlying dependency code.
  *
  * Existing files in the destination are overwritten (the inner repo is in a
  * detached HEAD state and treated as ephemeral, so this is safe). The outer
@@ -321,15 +334,15 @@ class CollectBundleCommand extends Command {
 				"If set, build the named scenario under `scenarios/<scenario>/` instead " +
 				"of the default multi-entry webpack target. The scenario must define " +
 				"`scenarios/<scenario>/webpack.config.cts` that emits " +
-				"`bundleStats.msp.gz` into the package's `bundleAnalysis/` dir. In " +
-				"revision mode, if the scenario is missing at the base revision it is " +
-				"overlaid from the outer working tree (see --no-overlay-scenario).",
+				"`scenarioBundleStats.msp.gz` into the package's `bundleAnalysis/` dir. In " +
+				"revision mode, the scenario is overlaid from the outer working tree by " +
+				"default so both sides build with the same harness (see --no-overlay-scenario).",
 		}),
 		"no-overlay-scenario": Flags.boolean({
 			description:
 				"(revision mode only) Disable overlaying the scenario from the outer " +
-				"working tree when it is missing at the base revision. With this set, " +
-				"a missing scenario causes the build to fail loudly.",
+				"working tree. With this set, the scenario must already exist at the base " +
+				"revision; if it does not, the build will fail loudly.",
 			default: false,
 		}),
 		"force-clean-build": Flags.boolean({
@@ -386,23 +399,21 @@ class CollectBundleCommand extends Command {
 				scenario,
 				"webpack.config.cts",
 			);
-			if (!existsSync(scenarioConfigPath)) {
-				if (mode === "revision" && !noOverlayScenario) {
-					console.log(
-						`\nScenario "${scenario}" not present at revision ` +
-							`"${revision as string}"; overlaying from outer working tree.`,
-					);
-					overlayScenarioFromOuter(scenario, activePackageRoot);
-				} else {
-					this.error(
-						`Scenario webpack config not found at ${scenarioConfigPath}. ` +
-							(mode === "revision"
-								? `The revision "${revision as string}" may predate this scenario; ` +
-									`drop --no-overlay-scenario to overlay it from the outer working tree.`
-								: `Check that "scenarios/${scenario}" exists.`),
-						{ exit: 1 },
-					);
-				}
+			if (mode === "revision" && !noOverlayScenario) {
+				// Always overlay in revision mode (regardless of whether the scenario
+				// exists at the base): the outer scenario is the source of truth for
+				// the comparison harness, so both sides should build with the same
+				// webpack config / plugins / entry point.
+				overlayScenarioFromOuter(scenario, activePackageRoot);
+			} else if (!existsSync(scenarioConfigPath)) {
+				this.error(
+					`Scenario webpack config not found at ${scenarioConfigPath}. ` +
+						(mode === "revision"
+							? `The revision "${revision as string}" may predate this scenario; ` +
+								`drop --no-overlay-scenario to overlay it from the outer working tree.`
+							: `Check that "scenarios/${scenario}" exists.`),
+					{ exit: 1 },
+				);
 			}
 		}
 
