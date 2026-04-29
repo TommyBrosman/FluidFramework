@@ -20,10 +20,17 @@
 //
 import path from "node:path";
 
+// eslint-disable-next-line import-x/no-internal-modules
+import { BundleComparisonPlugin } from "@mixer/webpack-bundle-compare/dist/plugin";
 import TerserPlugin from "terser-webpack-plugin";
 import { default as webpack } from "webpack";
 
 const bundleName = "encapsulated-with-shared-tree.js";
+
+// Package root for bundle-size-tests (two levels up from this scenario directory).
+// `bundleStats.msp.gz` is written here so collectBundle.ts can pick it up at the
+// same path it uses for the main webpack target.
+const packageRoot = path.resolve(__dirname, "../..");
 
 const config: webpack.Configuration = {
 	devtool: "source-map",
@@ -75,6 +82,12 @@ const config: webpack.Configuration = {
 	plugins: [
 		new webpack.optimize.LimitChunkCountPlugin({
 			maxChunks: 1,
+		}),
+		// Emits a MessagePack-compressed webpack stats file consumed by
+		// compareBundles.ts. Path matches the one used by the main webpack
+		// config so collectBundle.ts can pick up scenario stats unchanged.
+		new BundleComparisonPlugin({
+			file: path.resolve(packageRoot, "bundleAnalysis/bundleStats.msp.gz"),
 		}),
 	],
 	resolve: {

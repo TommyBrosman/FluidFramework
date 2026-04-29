@@ -88,6 +88,7 @@ class CollectAndCompareBundlesCommand extends Command {
 		"<%= config.bin %> <%= command.id %>",
 		"<%= config.bin %> <%= command.id %> --base-revision main",
 		"<%= config.bin %> <%= command.id %> --base-revision v2.20.0",
+		"<%= config.bin %> <%= command.id %> --scenario encapsulated-with-shared-tree",
 		"<%= config.bin %> <%= command.id %> --force-clean-build --skip-compare",
 	];
 
@@ -99,6 +100,20 @@ class CollectAndCompareBundlesCommand extends Command {
 				"point), so worktree-based setups where 'main' is in an unusual location " +
 				"still produce the expected comparison.",
 			default: "main",
+		}),
+		scenario: Flags.string({
+			description:
+				"If set, build the named scenario under `scenarios/<scenario>/` for both " +
+				"the local and base bundles instead of the default multi-entry webpack " +
+				"target. Forwarded to collectBundle.ts. If the scenario does not exist at " +
+				"the base revision it is overlaid from the outer working tree (see " +
+				"--no-overlay-scenario).",
+		}),
+		"no-overlay-scenario": Flags.boolean({
+			description:
+				"Forwarded to collectBundle.ts. Disable overlaying the scenario from the " +
+				"outer working tree when it is missing at the base revision.",
+			default: false,
 		}),
 		"skip-compare": Flags.boolean({
 			description: "Collect both bundles, but skip the comparison step.",
@@ -138,10 +153,18 @@ class CollectAndCompareBundlesCommand extends Command {
 
 		const skipCompare = flags["skip-compare"];
 		const forceCleanBuildFlag = flags["force-clean-build"];
+		const { scenario } = flags;
+		const noOverlayScenario = flags["no-overlay-scenario"];
 
 		const sharedCollectArgs: string[] = [];
 		if (forceCleanBuildFlag) {
 			sharedCollectArgs.push("--force-clean-build");
+		}
+		if (scenario !== undefined) {
+			sharedCollectArgs.push("--scenario", scenario);
+		}
+		if (noOverlayScenario) {
+			sharedCollectArgs.push("--no-overlay-scenario");
 		}
 
 		try {

@@ -106,26 +106,61 @@ function buildWorkspace(packageRoot: string): void {
 
 /**
  * Builds bundles using webpack inside the given package root.
+ *
+ * @param packageRoot - Package root in which to invoke webpack.
+ * @param scenario - If set, runs webpack directly against
+ *   `scenarios/<scenario>/webpack.config.cts` instead of the default
+ *   `webpack` npm script. Direct invocation (rather than
+ *   `npm run webpack:scenario`) is intentional: in revision mode the inner
+ *   `package.json` may predate the `webpack:scenario` script entirely (e.g.
+ *   when the scenario was overlaid from the outer working tree). webpack and
+ *   its loaders are already devDeps of this package across all relevant
+ *   revisions, so direct invocation works regardless.
  */
-function buildBundles(packageRoot: string): void {
-	console.log(`\nBuilding bundles with webpack in ${packageRoot}...`);
-	run("npm run webpack", packageRoot);
+function buildBundles(packageRoot: string, scenario: string | undefined): void {
+	if (scenario === undefined) {
+		console.log(`\nBuilding bundles with webpack in ${packageRoot}...`);
+		run("npm run webpack", packageRoot);
+	} else {
+		console.log(
+			`\nBuilding scenario bundle "${scenario}" with webpack in ${packageRoot}...`,
+		);
+		const configPath = resolve(
+			packageRoot,
+			"scenarios",
+			scenario,
+			"webpack.config.cts",
+		);
+		run(`npx webpack --config ${JSON.stringify(configPath)}`, packageRoot);
+	}
 }
 
 /**
- * Moves webpack's stats output and `build/` directory into the per-label directory
+ * Moves webpack's stats output and bundle assets into the per-label directory
  * under the persistent analysis root.
  *
  * @param label - Sanitized label for this build (e.g., "main", "feature_branch").
  * @param sourcePackageRoot - Package root that produced the webpack output.
+ * @param scenario - If set, copies bundle assets from
+ *   `<sourcePackageRoot>/build/scenarios/<scenario>` instead of
+ *   `<sourcePackageRoot>/build`. The stats file path is the same in both
+ *   cases (the scenario webpack config writes it to the package's
+ *   `bundleAnalysis/bundleStats.msp.gz` to match the main config).
  */
-function saveStats(label: string, sourcePackageRoot: string): void {
+function saveStats(
+	label: string,
+	sourcePackageRoot: string,
+	scenario: string | undefined,
+): void {
 	const webpackStatsOutputPath = resolve(
 		sourcePackageRoot,
 		"bundleAnalysis",
 		"bundleStats.msp.gz",
 	);
-	const webpackBuildOutputPath = resolve(sourcePackageRoot, "build");
+	const webpackBuildOutputPath =
+		scenario === undefined
+			? resolve(sourcePackageRoot, "build")
+			: resolve(sourcePackageRoot, "build", "scenarios", scenario);
 
 	const labelDirectory = resolve(bundleAnalysisDirectory, label);
 	const destStatsPath = resolve(labelDirectory, "bundleStats.msp.gz");
@@ -207,6 +242,42 @@ function syncInnerRepoToRevision(revision: string): void {
 }
 
 /**
+ * Mirrors `<outerPackageRoot>/scenarios/<scenario>/` into the inner package's
+ * `scenarios/` directory so revision-mode builds can use a scenario that does
+ * not exist at the base revision.
+ *
+ * Existing files in the destination are overwritten (the inner repo is in a
+ * detached HEAD state and treated as ephemeral, so this is safe). The outer
+ * working tree is read-only.
+ *
+ * Limitations: only the scenario directory itself is overlaid. devDeps,
+ * `package.json` scripts, and other package-level changes at the outer
+ * revision are NOT propagated. The scenario should depend only on what is
+ * already a devDep of this package across both revisions; if it does not,
+ * the build will fail loudly during webpack invocation.
+ */
+function overlayScenarioFromOuter(scenario: string, innerPackageRoot: string): void {
+	const outerScenarioDir = resolve(outerPackageRoot, "scenarios", scenario);
+	const innerScenarioDir = resolve(innerPackageRoot, "scenarios", scenario);
+
+	if (!existsSync(outerScenarioDir)) {
+		throw new Error(
+			`Cannot overlay scenario "${scenario}": source not found in outer working ` +
+				`tree at ${outerScenarioDir}.`,
+		);
+	}
+
+	console.log(
+		`\nOverlaying scenario "${scenario}" from outer working tree:\n` +
+			`  source: ${outerScenarioDir}\n` +
+			`  dest:   ${innerScenarioDir}`,
+	);
+	mkdirSync(dirname(innerScenarioDir), { recursive: true });
+	rmSync(innerScenarioDir, { recursive: true, force: true });
+	cpSync(outerScenarioDir, innerScenarioDir, { recursive: true });
+}
+
+/**
  * Collects a single bundle from either the outer enlistment (local mode) or a
  * separate inner enlistment checked out to a specific revision (revision mode).
  *
@@ -224,6 +295,7 @@ class CollectBundleCommand extends Command {
 		"<%= config.bin %> <%= command.id %>",
 		"<%= config.bin %> <%= command.id %> --mode revision --revision main",
 		"<%= config.bin %> <%= command.id %> --mode revision --revision v2.20.0",
+		"<%= config.bin %> <%= command.id %> --scenario encapsulated-with-shared-tree",
 	];
 
 	public static override readonly flags = {
@@ -244,6 +316,22 @@ class CollectBundleCommand extends Command {
 				"Override the directory name under which bundle stats are saved. " +
 				'Defaults to the sanitized revision in revision mode, or "current" in local mode.',
 		}),
+		scenario: Flags.string({
+			description:
+				"If set, build the named scenario under `scenarios/<scenario>/` instead " +
+				"of the default multi-entry webpack target. The scenario must define " +
+				"`scenarios/<scenario>/webpack.config.cts` that emits " +
+				"`bundleStats.msp.gz` into the package's `bundleAnalysis/` dir. In " +
+				"revision mode, if the scenario is missing at the base revision it is " +
+				"overlaid from the outer working tree (see --no-overlay-scenario).",
+		}),
+		"no-overlay-scenario": Flags.boolean({
+			description:
+				"(revision mode only) Disable overlaying the scenario from the outer " +
+				"working tree when it is missing at the base revision. With this set, " +
+				"a missing scenario causes the build to fail loudly.",
+			default: false,
+		}),
 		"force-clean-build": Flags.boolean({
 			description:
 				"Run the full workspace clean ('npm run clean' at the repo root) before " +
@@ -257,8 +345,9 @@ class CollectBundleCommand extends Command {
 		const { flags } = await this.parse(CollectBundleCommand);
 
 		const mode = flags.mode as "local" | "revision";
-		const { revision } = flags;
+		const { revision, scenario } = flags;
 		const forceCleanBuild = flags["force-clean-build"];
+		const noOverlayScenario = flags["no-overlay-scenario"];
 
 		if (mode === "revision" && (revision === undefined || revision.length === 0)) {
 			this.error("--mode revision requires --revision <rev>.", { exit: 1 });
@@ -290,15 +379,46 @@ class CollectBundleCommand extends Command {
 			installDependencies(activeRepoRoot);
 		}
 
+		if (scenario !== undefined) {
+			const scenarioConfigPath = resolve(
+				activePackageRoot,
+				"scenarios",
+				scenario,
+				"webpack.config.cts",
+			);
+			if (!existsSync(scenarioConfigPath)) {
+				if (mode === "revision" && !noOverlayScenario) {
+					console.log(
+						`\nScenario "${scenario}" not present at revision ` +
+							`"${revision as string}"; overlaying from outer working tree.`,
+					);
+					overlayScenarioFromOuter(scenario, activePackageRoot);
+				} else {
+					this.error(
+						`Scenario webpack config not found at ${scenarioConfigPath}. ` +
+							(mode === "revision"
+								? `The revision "${revision as string}" may predate this scenario; ` +
+									`drop --no-overlay-scenario to overlay it from the outer working tree.`
+								: `Check that "scenarios/${scenario}" exists.`),
+						{ exit: 1 },
+					);
+				}
+			}
+		}
+
 		if (forceCleanBuild) {
 			cleanWorkspace(activeRepoRoot);
 		}
 		buildWorkspace(activePackageRoot);
-		buildBundles(activePackageRoot);
-		saveStats(label, activePackageRoot);
+		buildBundles(activePackageRoot, scenario);
+		saveStats(label, activePackageRoot, scenario);
 
 		console.log(`\n${"=".repeat(80)}`);
-		console.log(`✓ Bundle collection complete (mode: ${mode}, label: ${label}).`);
+		console.log(
+			`✓ Bundle collection complete (mode: ${mode}, label: ${label}` +
+				(scenario === undefined ? "" : `, scenario: ${scenario}`) +
+				").",
+		);
 		console.log(`  Stats directory: ${resolve(bundleAnalysisDirectory, label)}`);
 		console.log("=".repeat(80));
 	}
