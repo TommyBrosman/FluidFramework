@@ -62,10 +62,31 @@ export const noChangeHandler: FieldChangeHandler<0> = {
  * when the full runtime is loaded.
  */
 
+// Narrow named aliases so callers can use them as discriminating types
+// (e.g. with `view.root.is(FieldKinds.optional)`).
+export interface Optional
+	extends FlexFieldKind<
+		FieldEditor<any>,
+		typeof optionalIdentifier,
+		Multiplicity.Optional
+	> {}
+export interface Required
+	extends FlexFieldKind<
+		FieldEditor<any>,
+		typeof requiredIdentifier,
+		Multiplicity.Single
+	> {}
+export interface Sequence
+	extends FlexFieldKind<
+		FieldEditor<any>,
+		typeof sequenceIdentifier,
+		Multiplicity.Sequence
+	> {}
+
 /**
  * 0 or 1 items.
  */
-export const optional: FlexFieldKind = new FlexFieldKind(
+export const optional: Optional = new FlexFieldKind(
 	optionalIdentifier,
 	Multiplicity.Optional,
 	{
@@ -81,7 +102,7 @@ export const optional: FlexFieldKind = new FlexFieldKind(
 /**
  * Exactly one item.
  */
-export const required: FlexFieldKind = new FlexFieldKind(
+export const required: Required = new FlexFieldKind(
 	requiredIdentifier,
 	Multiplicity.Single,
 	{
@@ -93,7 +114,7 @@ export const required: FlexFieldKind = new FlexFieldKind(
 /**
  * 0 or more items.
  */
-export const sequence: FlexFieldKind = new FlexFieldKind(
+export const sequence: Sequence = new FlexFieldKind(
 	sequenceIdentifier,
 	Multiplicity.Sequence,
 	{
@@ -240,9 +261,9 @@ export const fieldKinds: ReadonlyMap<FieldKindIdentifier, FlexFieldKind> = new M
  * Default FieldKinds with their editor types erased.
  */
 export const FieldKinds: {
-	readonly required: FlexFieldKind;
-	readonly optional: FlexFieldKind;
-	readonly sequence: FlexFieldKind;
+	readonly required: Required;
+	readonly optional: Optional;
+	readonly sequence: Sequence;
 	readonly identifier: Identifier;
 	readonly forbidden: Forbidden;
 } = { required, optional, sequence, identifier, forbidden };
