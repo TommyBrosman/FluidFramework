@@ -63,12 +63,14 @@ interface StatsModule {
 interface CliFlags {
 	scenario: string;
 	outPath: string;
+	cutoff: number;
 }
 
 function parseFlags(): CliFlags {
 	const argv = process.argv.slice(2);
 	let scenario = "encapsulated-with-shared-tree";
 	let outPath: string | undefined;
+	let cutoff = 0;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		switch (a) {
@@ -80,10 +82,19 @@ function parseFlags(): CliFlags {
 				outPath = argv[++i];
 				break;
 			}
+			case "--cutoff": {
+				const raw = argv[++i] ?? "0";
+				const parsed = Number(raw);
+				if (!Number.isFinite(parsed) || parsed < 0) {
+					throw new TypeError(`--cutoff expects a non-negative number, got ${raw}`);
+				}
+				cutoff = parsed;
+				break;
+			}
 			case "-h":
 			case "--help": {
 				console.log(
-					"Usage: jiti scripts/analyzeTreeReasons.ts [--scenario <name>] [--out <path>]",
+					"Usage: jiti scripts/analyzeTreeReasons.ts [--scenario <name>] [--out <path>] [--cutoff <bytes>]",
 				);
 				process.exit(0);
 			}
@@ -96,6 +107,7 @@ function parseFlags(): CliFlags {
 		scenario,
 		outPath:
 			outPath ?? path.resolve(packageRoot, "bundleAnalysis", `tree-reasons-${scenario}.md`),
+		cutoff,
 	};
 }
 
@@ -357,6 +369,7 @@ function buildReport(
 	bundleTotal: number,
 	treeTotal: number,
 	bundlePath: string,
+	cutoff: number,
 ): string {
 	const lines: string[] = [];
 	lines.push(`# Tree imports — scenario \`${scenario}\``);
@@ -414,6 +427,12 @@ function buildReport(
 		"Notation: `A B  module/path  [shared: api1, api2]` where `A` = bytes of this module and `B` = sum of bytes for this module plus all of its descendants printed beneath it. Lines marked `(see above)` are modules already printed earlier in the same tree or by a previous API; they are not re-expanded.",
 	);
 	lines.push("");
+	if (cutoff > 0) {
+		lines.push(
+			`Pruning: subtrees with Σ &lt; **${cutoff.toLocaleString()} B** are folded into a single \`(N modules pruned, Σ X B)\` summary line. The API root itself is always shown.`,
+		);
+		lines.push("");
+	}
 
 	const printedGlobally = new Set<string>();
 	const treeChildren = (m: string): string[] =>
@@ -465,11 +484,33 @@ function buildReport(
 		lines.push(
 			`${indent}${branch}\`${shortName(node)}\`  ${ownB.toLocaleString()} B / Σ ${subB.toLocaleString()} B${sharedLabel}`,
 		);
-		const kids = treeChildren(node).sort(
+		const allKids = treeChildren(node).sort(
 			(a, b) => (subtree.get(b) ?? 0) - (subtree.get(a) ?? 0),
 		);
-		for (let idx = 0; idx < kids.length; idx++) {
-			dfsPrint(kids[idx], [...isLast, idx === kids.length - 1], subtree, currentApi);
+		// Apply cutoff: a child is shown if it's a `(see above)` reference
+		// (cheap, informative) OR its fresh subtree size meets the cutoff.
+		const shown: string[] = [];
+		const pruned: string[] = [];
+		for (const k of allKids) {
+			const isRepeat = printedGlobally.has(k);
+			const sz = subtree.get(k) ?? 0;
+			if (isRepeat || cutoff <= 0 || sz >= cutoff) {
+				shown.push(k);
+			} else {
+				pruned.push(k);
+			}
+		}
+		const hasPrunedSummary = pruned.length > 0;
+		for (let idx = 0; idx < shown.length; idx++) {
+			const isLastShown = idx === shown.length - 1 && !hasPrunedSummary;
+			dfsPrint(shown[idx], [...isLast, isLastShown], subtree, currentApi);
+		}
+		if (hasPrunedSummary) {
+			const prunedTotal = pruned.reduce((acc, k) => acc + (subtree.get(k) ?? 0), 0);
+			const { indent: pIndent, branch: pBranch } = formatTreePrefix([...isLast, true]);
+			lines.push(
+				`${pIndent}${pBranch}(${pruned.length} ${pruned.length === 1 ? "subtree" : "subtrees"} below cutoff, Σ ${prunedTotal.toLocaleString()} B)`,
+			);
 		}
 	}
 
@@ -654,6 +695,7 @@ async function main(): Promise<void> {
 		total,
 		treeTotal,
 		bundlePath,
+		flags.cutoff,
 	);
 	writeFileSync(flags.outPath, report);
 	console.log(`\nReport written to: ${flags.outPath}`);
