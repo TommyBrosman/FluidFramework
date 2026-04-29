@@ -23,6 +23,10 @@ const config: Linter.Config[] = [
 		rules: {
 			"import-x/no-nodejs-modules": "off",
 			"unicorn/no-process-exit": "off",
+			"unicorn/filename-case": "off",
+			"@typescript-eslint/prefer-nullish-coalescing": "off",
+			"@typescript-eslint/no-unsafe-call": "off",
+			"@typescript-eslint/no-unsafe-return": "off",
 		},
 	},
 	{
