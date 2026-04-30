@@ -234,10 +234,54 @@ function ensureInnerRepo(): void {
 }
 
 /**
+ * Discards all uncommitted changes and untracked files in the **inner repo only**.
+ *
+ * Required because {@link overlayScenarioFromOuter} writes into tracked paths
+ * inside the inner repo (e.g. `scenarios/<scenario>/webpack.config.cts`).
+ * Those edits would otherwise block the next `git checkout --detach` with
+ * "Your local changes would be overwritten by checkout".
+ *
+ * **SAFETY: This is destructive — `git reset --hard` and `git clean -fdx`
+ * permanently discard work. It MUST NEVER be invoked against the outer
+ * repository.** The inner repo at {@link innerRepoRoot} is treated as
+ * ephemeral scratch space (it is re-cloned automatically if missing, and
+ * its working tree is not user-authored), so wiping it is safe; the outer
+ * repo is the user's working enlistment and is never touched by this
+ * script.
+ *
+ * The single call site for this function is {@link syncInnerRepoToRevision},
+ * which is itself only invoked from the revision branch of
+ * {@link CollectBundleCommand.run}. Local-mode (outer-repo) collection
+ * never reaches this code path.
+ */
+function resetInnerRepo(): void {
+	// Defense in depth: refuse to run if the path we were handed is somehow
+	// not the inner repo (e.g. a future refactor wires the outer root in by
+	// mistake). Both the literal path equality and the assertion that we are
+	// not the outer repo must hold.
+	if (innerRepoRoot === outerRepoRoot) {
+		throw new Error(
+			`resetInnerRepo refused to run: innerRepoRoot equals outerRepoRoot (${outerRepoRoot}). ` +
+				`This function is only safe to call against the ephemeral inner repo.`,
+		);
+	}
+	console.log(`\nResetting inner repo working tree to discard any prior overlays...`);
+	run("git reset --hard HEAD", innerRepoRoot);
+	run("git clean -fdx", innerRepoRoot);
+}
+
+/**
  * Fetches the latest refs and checks out the requested revision in the inner repo.
  * The revision can be a branch, tag, or commit SHA.
+ *
+ * @remarks Calls {@link resetInnerRepo} before checkout so that any overlays
+ * left from a previous run (see {@link overlayScenarioFromOuter}) do not
+ * block the checkout. This is safe because the inner repo is ephemeral; the
+ * outer repo is never touched by this function.
  */
 function syncInnerRepoToRevision(revision: string): void {
+	resetInnerRepo();
+
 	console.log(`\nFetching latest refs in inner repo...`);
 	run("git fetch --tags origin", innerRepoRoot);
 
