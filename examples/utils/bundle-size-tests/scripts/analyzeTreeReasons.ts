@@ -64,6 +64,7 @@ interface CliFlags {
 	scenario: string;
 	outPath: string;
 	cutoff: number;
+	root: string | undefined;
 }
 
 function parseFlags(): CliFlags {
@@ -71,6 +72,7 @@ function parseFlags(): CliFlags {
 	let scenario = "encapsulated-with-shared-tree";
 	let outPath: string | undefined;
 	let cutoff = 0;
+	let root: string | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		switch (a) {
@@ -91,10 +93,14 @@ function parseFlags(): CliFlags {
 				cutoff = parsed;
 				break;
 			}
+			case "--root": {
+				root = argv[++i];
+				break;
+			}
 			case "-h":
 			case "--help": {
 				console.log(
-					"Usage: jiti scripts/analyzeTreeReasons.ts [--scenario <name>] [--out <path>] [--cutoff <bytes>]",
+					"Usage: jiti scripts/analyzeTreeReasons.ts [--scenario <name>] [--out <path>] [--cutoff <bytes>] [--root <tree-lib-relpath>]",
 				);
 				process.exit(0);
 			}
@@ -103,11 +109,14 @@ function parseFlags(): CliFlags {
 			}
 		}
 	}
+	const defaultBaseName = root === undefined
+		? `tree-reasons-${scenario}.md`
+		: `tree-reasons-${scenario}-${path.basename(root).replace(/\.js$/, "")}.md`;
 	return {
 		scenario,
-		outPath:
-			outPath ?? path.resolve(packageRoot, "bundleAnalysis", `tree-reasons-${scenario}.md`),
+		outPath: outPath ?? path.resolve(packageRoot, "bundleAnalysis", defaultBaseName),
 		cutoff,
+		root,
 	};
 }
 
@@ -556,22 +565,51 @@ function buildReport(
 	return lines.join("\n");
 }
 
+/**
+ * Normalize a `--root` argument to the webpack-stats module name.
+ * Accepts:
+ *   - shortName form: `tree/shared-tree/treeCheckout.js`
+ *   - lib-relative: `shared-tree/treeCheckout.js`
+ *   - stats form: `../../../packages/dds/tree/lib/shared-tree/treeCheckout.js`
+ */
+function normalizeRoot(raw: string): string {
+	if (raw.startsWith("../") || raw.startsWith("./")) return raw;
+	const stripped = raw.startsWith("tree/") ? raw.slice("tree/".length) : raw;
+	return `../../../packages/dds/tree/lib/${stripped}`;
+}
+
 async function main(): Promise<void> {
 	const flags = parseFlags();
 
-	console.log(`[1/5] Parsing scenario entry imports...`);
-	const imports = parseEntryImports(flags.scenario);
-	console.log(`  ${imports.runtime.length} runtime: ${imports.runtime.join(", ")}`);
-	console.log(`  ${imports.typeOnly.length} type-only: ${imports.typeOnly.join(", ")}`);
+	let imports: { runtime: string[]; typeOnly: string[] };
+	let owners: Map<string, string> = new Map();
+	if (flags.root === undefined) {
+		console.log(`[1/5] Parsing scenario entry imports...`);
+		imports = parseEntryImports(flags.scenario);
+		console.log(`  ${imports.runtime.length} runtime: ${imports.runtime.join(", ")}`);
+		console.log(`  ${imports.typeOnly.length} type-only: ${imports.typeOnly.join(", ")}`);
+	} else {
+		const normalized = normalizeRoot(flags.root);
+		const apiName = shortName(normalized);
+		console.log(`[1/5] Using explicit --root override: ${apiName}`);
+		imports = { runtime: [apiName], typeOnly: [] };
+		owners = new Map([[apiName, normalized]]);
+	}
 
-	console.log(`[2/5] Locating owning modules in tree dist...`);
+	if (flags.root === undefined) {
+		console.log(`[2/5] Locating owning modules in tree dist...`);
+	} else {
+		console.log(`[2/5] Skipping owning-module lookup (using --root).`);
+	}
 	if (!existsSync(treeLibDir)) {
 		throw new Error(`Tree dist not found at ${treeLibDir}. Build @fluidframework/tree first.`);
 	}
-	const owners = findOwningModules(imports.runtime);
-	for (const name of imports.runtime) {
-		const o = owners.get(name);
-		console.log(`  ${name} -> ${o === undefined ? "(not found)" : shortName(o)}`);
+	if (flags.root === undefined) {
+		owners = findOwningModules(imports.runtime);
+		for (const name of imports.runtime) {
+			const o = owners.get(name);
+			console.log(`  ${name} -> ${o === undefined ? "(not found)" : shortName(o)}`);
+		}
 	}
 
 	console.log(`[3/5] Building production bundle...`);
