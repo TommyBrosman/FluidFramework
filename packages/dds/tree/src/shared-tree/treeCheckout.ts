@@ -1566,58 +1566,46 @@ class EditLock {
 	 */
 	public constructor(editor: ISharedTreeEditor) {
 		const checkLock = (): void => this.checkUnlocked("Editing the tree");
-		this.editor = {
-			get schema() {
-				return editor.schema;
-			},
-			valueField(...fieldArgs) {
+		// Constraint methods are unaffected by the lock (they just enqueue intents on the
+		// underlying editor); use a prototype chain so they fall through without per-method
+		// pass-through wrappers. Only the field/move methods need lock-checking overrides.
+		this.editor = Object.assign(Object.create(editor) as ISharedTreeEditor, {
+			valueField(...fieldArgs: Parameters<ISharedTreeEditor["valueField"]>) {
 				const valueField = editor.valueField(...fieldArgs);
 				return {
-					set(...editArgs) {
+					set(...editArgs: Parameters<typeof valueField.set>) {
 						checkLock();
 						valueField.set(...editArgs);
 					},
 				};
 			},
-			optionalField(...fieldArgs) {
+			optionalField(...fieldArgs: Parameters<ISharedTreeEditor["optionalField"]>) {
 				const optionalField = editor.optionalField(...fieldArgs);
 				return {
-					set(...editArgs) {
+					set(...editArgs: Parameters<typeof optionalField.set>) {
 						checkLock();
 						optionalField.set(...editArgs);
 					},
 				};
 			},
-			sequenceField(...fieldArgs) {
+			sequenceField(...fieldArgs: Parameters<ISharedTreeEditor["sequenceField"]>) {
 				const sequenceField = editor.sequenceField(...fieldArgs);
 				return {
-					insert(...editArgs) {
+					insert(...editArgs: Parameters<typeof sequenceField.insert>) {
 						checkLock();
 						sequenceField.insert(...editArgs);
 					},
-					remove(...editArgs) {
+					remove(...editArgs: Parameters<typeof sequenceField.remove>) {
 						checkLock();
 						sequenceField.remove(...editArgs);
 					},
 				};
 			},
-			move(...moveArgs) {
+			move(...moveArgs: Parameters<ISharedTreeEditor["move"]>) {
 				checkLock();
 				editor.move(...moveArgs);
 			},
-			addNodeExistsConstraint(path) {
-				editor.addNodeExistsConstraint(path);
-			},
-			addNodeExistsConstraintOnRevert(path) {
-				editor.addNodeExistsConstraintOnRevert(path);
-			},
-			addNoChangeConstraint() {
-				editor.addNoChangeConstraint();
-			},
-			addNoChangeConstraintOnRevert() {
-				editor.addNoChangeConstraintOnRevert();
-			},
-		};
+		});
 	}
 
 	/**
