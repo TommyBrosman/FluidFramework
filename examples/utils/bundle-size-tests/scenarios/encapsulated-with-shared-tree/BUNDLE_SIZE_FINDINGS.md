@@ -725,6 +725,87 @@ Error("…")`, drop the imports they uniquely pull, rerun
 `collect:compare:bundles`, and confirm the parsed-byte delta.
 
 
+## Non-tree wins (low-risk, package-level)
+
+Outside `@fluidframework/tree`, the highest-leverage low-risk savings
+are confined to **utility/polyfill swaps in two or three files**. All
+sizes below are parsed bundle bytes (post-terser), measured against the
+current branch HEAD bundle (993,352 B total).
+
+### Tier 1 — polyfill / micro-dep removals (~14.5 KB combined, ~1.5%)
+
+| # | Change | Bytes saved | Files touched | Risk |
+|---|---|---:|---|---|
+| N1 | Replace `events` polyfill in [packages/common/client-utils/src/eventEmitter.cts](../../../../packages/common/client-utils/src/eventEmitter.cts) with a ~50-line in-tree `EventEmitter` matching the Node API surface (`on`/`off`/`emit`/`once`/`removeListener`/`removeAllListeners`/`listenerCount`). The file is already a single-line re-export of `events_pkg` and carries the TODO `AB#7377 Provide Fluid EventEmitter using support in packages/dds/tree/src/events`. ~40 `TypedEventEmitter` consumers sit on top of this re-export and are unaffected. | ~6,000 | 1 source file + `package.json` dep removal | Low — pure utility, fully covered by existing `TypedEventEmitter` tests |
+| N2 | Replace `path-browserify` in [packages/dds/map/src/directory.ts](../../../../packages/dds/map/src/directory.ts) with ~20 lines of inline posix string helpers. Only `posix.sep`, `posix.join`, `posix.resolve` are used (~6 call sites). | ~4,100 | 1 file | Low — narrow API surface, easy parity test |
+| N3 | Replace `double-ended-queue` in [packages/runtime/container-runtime/src/pendingStateManager.ts](../../../../packages/runtime/container-runtime/src/pendingStateManager.ts) and [packages/loader/container-loader/src/deltaQueue.ts](../../../../packages/loader/container-loader/src/deltaQueue.ts) with a small array-backed `Deque<T>` (~40 lines, amortised O(1) shift via head index). `dds/sequence` and `dds/matrix` use it too — same swap. | ~3,100 | 2 production files (+ shared helper) | Low |
+| N4 | Replace `base64-js` in [packages/common/client-utils/src/bufferBrowser.ts](../../../../packages/common/client-utils/src/bufferBrowser.ts) and [packages/common/client-utils/src/hashFileBrowser.ts](../../../../packages/common/client-utils/src/hashFileBrowser.ts) with `btoa`/`atob` plus the standard 8-line `Uint8Array`⇄base64 helpers via `globalThis`. | ~1,300 | 2 files (browser-only path) | Low — files are already browser-conditional |
+
+### Tier 2 — small but worth a follow-up (~2 KB)
+
+| # | Change | Bytes saved | Notes |
+|---|---|---:|---|
+| N5 | Inline a 15-line `compareVersions(a, b)` in [packages/runtime/runtime-utils/src/compatibilityBase.ts](../../../../packages/runtime/runtime-utils/src/compatibilityBase.ts) and [packages/runtime/container-runtime/src/summary/documentSchema.ts](../../../../packages/runtime/container-runtime/src/summary/documentSchema.ts) for the runtime-side compat checks; **don't** remove `semver-ts` repo-wide (tree uses it more heavily). | ~2,200 | Runtime-side only |
+
+### Tier 3 — structural, **not** low-risk
+
+| # | Change | Approx. cost in bundle | Why it's not low-risk |
+|---|---|---:|---|
+| N6 | Remove `debug` from the default `Loader` import path. Pulled in via [packages/loader/container-loader/src/debugLogger.ts](../../../../packages/loader/container-loader/src/debugLogger.ts) (`import debugPkg from "debug"`), which is re-exported through `Loader` itself ([loader.ts](../../../../packages/loader/container-loader/src/loader.ts)) and `createAndLoadContainerUtils.ts`. Total cost in the bundle ≈ 4.7 KB (`debug/src/browser.js` 2,632 B + `ms` 1,402 B + remainder). | ~4,700 | `DebugLogger` is part of the loader's public/legacy surface and `debug`'s namespace pattern (`localStorage.debug = "fluid:*"`) is a documented diagnostic for partner teams. Mitigation: split `DebugLogger` into a separate entry point so the default `Loader` doesn't drag it in; preserves diagnostic for users who explicitly import it. |
+| N7 | Make `dds/sequence` truly tree-shakeable from `Marker` / `ReferenceType` / `refGetTileLabels`. The scenario entry exports only those three small symbols, yet drags in the entire `merge-tree` (~92.7 KB) + `sequence` (~40 KB) packages. The fix is to ensure the modules that **declare** those names are leaf-y: no top-level imports of `Client` / `MergeTree` / `PartialSequenceLengths`. | up to ~130 KB (theoretical ceiling; real win likely much smaller due to internal coupling) | Re-export-shape change in `dds/merge-tree/src/index.ts` and the `Marker`-declaring module; needs an `analyzeTreeReasons`-style audit rooted at the `merge-tree` barrel to bound the actual achievable savings. Risk: **medium-to-high**; requires per-symbol audit and likely `package.json`-level `exports` granularity. |
+
+### Hard pass — central plumbing
+
+The largest individual contributors after tree are not amenable to
+package-level wins:
+
+- `containerRuntime.ts` 53.6 KB
+- `container.ts` 29.8 KB
+- `channelCollection.ts` 17.0 KB
+- `dataStoreContext.ts` 15.0 KB
+- `deltaManager.ts` 14.6 KB
+- `connectionManager.ts` 13.4 KB
+
+The summarizer cluster (`runningSummarizer.ts` 13.1 KB,
+`summaryGenerator.ts` 5.8 KB, `summaryManager.ts` 6.3 KB,
+`summaryDelayLoadedModule/summarizer.ts` 5.2 KB; ~42 KB total) is
+**already factored** as `summaryDelayLoadedModule/*` for code-splitting,
+but the scenario uses `LimitChunkCountPlugin({ maxChunks: 1 })` so it
+ends up in the initial chunk. A scenario-level change (drop the plugin
+and accept two chunks) would shed ~42 KB from the initial chunk — but
+that's a **scenario tweak**, not a package change, and only meaningful
+if the consumer can actually load a second chunk.
+
+### Per-package totals (informational)
+
+| Source | Parsed bytes | Share |
+|---|---:|---:|
+| `packages/dds/tree` | 316,570 | 31.9% |
+| `packages/runtime/container-runtime` | 234,905 | 23.6% |
+| `packages/loader/container-loader` | 102,231 | 10.3% |
+| `packages/dds/merge-tree` | 92,732 | 9.3% |
+| `packages/dds/sequence` | 40,005 | 4.0% |
+| `packages/dds/map` | 35,188 | 3.5% |
+| `npm:@tylerbu/sorted-btree-es6` | 25,537 | 2.6% |
+| `[no source]` (terser-injected runtime) | 21,079 | 2.1% |
+| `packages/utils/telemetry-utils` | 18,626 | 1.9% |
+| `packages/runtime/id-compressor` | 17,952 | 1.8% |
+| `npm:@sinclair/typebox` | 12,580 | 1.3% |
+| `packages/dds/shared-object-base` | 10,528 | 1.1% |
+| `packages/runtime/runtime-utils` | 10,055 | 1.0% |
+| `packages/common/core-utils` | 8,473 | 0.9% |
+| `npm:events` | 5,996 | 0.6% |
+| `packages/loader/driver-utils` | 4,761 | 0.5% |
+| `npm:lz4js` | 4,672 | 0.5% |
+| `npm:debug` (+ `ms`) | 4,669 + 1,402 | 0.6% |
+| `npm:path-browserify` | 4,112 | 0.4% |
+| `packages/common/client-utils` | 3,692 | 0.4% |
+| `packages/framework/aqueduct` | 3,391 | 0.3% |
+| `npm:double-ended-queue` | 3,087 | 0.3% |
+| `npm:semver-ts` | 2,217 | 0.2% |
+| `npm:base64-js` | 1,272 | 0.1% |
+
+
 ## Reproducing
 
 ```bash
