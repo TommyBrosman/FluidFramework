@@ -151,6 +151,7 @@
 		"@fluidframework/shared-object-base": "workspace:~",
 		"@fluidframework/telemetry-utils": "workspace:~",
 		"double-ended-queue": "^2.1.0-0",
+		"tslib": "^2.8.1",
 		"uuid": "^11.1.0"
 	},
 	"devDependencies": {

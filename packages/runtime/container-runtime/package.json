@@ -184,6 +184,7 @@
 		"double-ended-queue": "^2.1.0-0",
 		"lz4js": "^0.2.0",
 		"semver-ts": "^1.0.3",
+		"tslib": "^2.8.1",
 		"uuid": "^11.1.0"
 	},
 	"devDependencies": {
