@@ -1625,9 +1625,6 @@ class EditLock {
 	 * @remarks May only be called when the lock is not already locked.
 	 */
 	public lock(): void {
-		if (this.locked) {
-			debugger;
-		}
 		assert(!this.locked, 0xaa7 /* Checkout has already been locked */);
 		this.locked = true;
 	}
