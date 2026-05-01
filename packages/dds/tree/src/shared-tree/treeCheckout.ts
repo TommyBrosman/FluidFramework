@@ -56,7 +56,6 @@ import {
 	type LabelTree,
 	type TransactionLabels,
 	type ChangeEncodingContext,
-	type ReadOnlyDetachedFieldIndex,
 	makeAnonChange,
 	type TaggedChange,
 	deltaFieldMapHasVisibleChanges,
@@ -599,39 +598,6 @@ export class TreeCheckout implements ITreeCheckout {
 		}
 	}
 
-	/**
-	 * Helper method for {@link SchematizingSimpleTreeView.runTransaction} to properly clear transaction labels once the function completes.
-	 *
-	 * @remarks
-	 * The label is stored during the execution of the function and will be included in the {@link ChangeMetadata} of the transaction.
-	 *
-	 * Labels supplied to nested transactions are ignored - only the outermost transaction label is ever used.
-	 *
-	 * @param fn - The function to execute. It receives the user provided transaction label as an optional parameter.
-	 * @param label - The label to associate with the outermost transaction.
-	 * @returns The result of executing `fn`.
-	 */
-	public runWithTransactionLabel<TLabel, TResult>(
-		fn: (label?: TLabel) => TResult,
-		label: TLabel | undefined,
-	): TResult {
-		try {
-			return fn(label);
-		} finally {
-			// Only clear the label tree when the outermost transaction has completed.
-			// Inner transactions' commits don't fire the "changed" event, so the label tree
-			// must remain intact until the outermost commit reads it.
-			if (this.transaction.size === 0) {
-				this.labelTreeNode = undefined;
-				this.mostRecentlyClosedLabelNode = undefined;
-			}
-		}
-	}
-
-	public get removedRoots(): ReadOnlyDetachedFieldIndex {
-		return this._removedRoots;
-	}
-
 	private registerForBranchEvents(): void {
 		this.#transaction.branch.events.on("afterChange", this.onAfterBranchChange);
 		this.#transaction.activeBranchEvents.on("afterChange", this.onAfterChange);
@@ -918,9 +884,17 @@ export class TreeCheckout implements ITreeCheckout {
 		addConstraintsToTransaction(this, true, transactionCallbackStatus?.preconditionsOnRevert);
 
 		this.popLabelFrame(false);
-		this.runWithTransactionLabel(() => {
+		try {
 			this.transaction.commit();
-		}, params?.label);
+		} finally {
+			// Only clear the label tree when the outermost transaction has completed.
+			// Inner transactions' commits don't fire the "changed" event, so the label tree
+			// must remain intact until the outermost commit reads it.
+			if (this.transaction.size === 0) {
+				this.labelTreeNode = undefined;
+				this.mostRecentlyClosedLabelNode = undefined;
+			}
+		}
 		return value === undefined
 			? { success: true }
 			: { success: true, value: value as TSuccessValue };
