@@ -36,8 +36,6 @@ import {
 	UsageError,
 	type TelemetryLoggerExt,
 } from "@fluidframework/telemetry-utils/internal";
-import path from "path-browserify";
-
 import type {
 	IDirectory,
 	IDirectoryEvents,
@@ -54,9 +52,57 @@ import type {
 import { serializeValue, migrateIfSharedSerializable } from "./localValues.js";
 import { findLast, findLastIndex } from "./utils.js";
 
-// We use path-browserify since this code can run safely on the server or the browser.
-// We standardize on using posix slashes everywhere.
-const posix = path.posix;
+// We standardize on using posix slashes everywhere. Inline implementations of the
+// posix.sep / posix.join / posix.resolve subset we use, replacing the
+// path-browserify polyfill (~4 KB in browser bundles) with ~30 lines that match
+// the Node `path.posix` semantics for the inputs this file produces.
+//
+// posix is not a Node `path` module instance — only `sep`, `join`, and `resolve`
+// are exposed. The `..` and `.` segment handling matches Node's posix.resolve:
+// `..` pops the last non-`..` segment (if any), `.` is dropped, multiple slashes
+// collapse to one. For relative paths, leading `..` segments above the (absent)
+// cwd are preserved; for absolute paths they are dropped.
+const posix = {
+	sep: "/",
+	join(...parts: string[]): string {
+		const filtered = parts.filter((p) => p.length > 0);
+		if (filtered.length === 0) return ".";
+		const joined = filtered.join("/");
+		const isAbsolute = joined.startsWith("/");
+		const normalized = posixNormalizeSegments(joined, isAbsolute);
+		if (isAbsolute) return `/${normalized}`;
+		return normalized.length === 0 ? "." : normalized;
+	},
+	resolve(...parts: string[]): string {
+		let resolved = "";
+		let isAbsolute = false;
+		// Right-to-left until an absolute path component is found.
+		for (let i = parts.length - 1; i >= 0 && !isAbsolute; i--) {
+			const part = parts[i];
+			if (part === undefined || part.length === 0) continue;
+			resolved = resolved.length === 0 ? part : `${part}/${resolved}`;
+			isAbsolute = part.startsWith("/");
+		}
+		// No cwd in this implementation; relative input stays relative.
+		const normalized = posixNormalizeSegments(resolved, isAbsolute);
+		if (isAbsolute) return `/${normalized}`;
+		return normalized.length === 0 ? "." : normalized;
+	},
+} as const;
+
+function posixNormalizeSegments(p: string, isAbsolute: boolean): string {
+	const segments: string[] = [];
+	for (const seg of p.split("/")) {
+		if (seg.length === 0 || seg === ".") continue;
+		if (seg === "..") {
+			if (segments.length > 0 && segments[segments.length - 1] !== "..") segments.pop();
+			else if (!isAbsolute) segments.push("..");
+			continue;
+		}
+		segments.push(seg);
+	}
+	return segments.join("/");
+}
 
 const snapshotFileName = "header";
 
