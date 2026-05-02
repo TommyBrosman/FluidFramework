@@ -13,8 +13,7 @@ import type {
 	IQuorumProposals,
 	ISequencedProposal,
 } from "@fluidframework/driver-definitions/internal";
-import events_pkg from "events_pkg";
-const { EventEmitter } = events_pkg;
+import { EventEmitter } from "@fluid-internal/client-utils";
 
 /**
  * Structure for tracking proposals that have been sequenced but not approved yet.
