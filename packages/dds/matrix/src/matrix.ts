@@ -51,7 +51,7 @@ import type {
 	IMatrixReader,
 	IMatrixWriter,
 } from "@tiny-calc/nano";
-import Deque from "double-ended-queue";
+import { Deque } from "@fluid-internal/client-utils";
 
 import type { HandleCache } from "./handlecache.js";
 import { type Handle, isHandleValid } from "./handletable.js";

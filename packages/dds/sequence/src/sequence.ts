@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-import { bufferToString } from "@fluid-internal/client-utils";
+import { Deque, bufferToString } from "@fluid-internal/client-utils";
 import type { IEventThisPlaceHolder } from "@fluidframework/core-interfaces";
 import { assert } from "@fluidframework/core-utils/internal";
 import type {
@@ -70,8 +70,6 @@ import {
 	extractTelemetryLoggerExt,
 	loggerToMonitoringContext,
 } from "@fluidframework/telemetry-utils/internal";
-import Deque from "double-ended-queue";
-
 import type { ISequenceIntervalCollection } from "./intervalCollection.js";
 import type { IMapOperation } from "./intervalCollectionMap.js";
 import { IntervalCollectionMap } from "./intervalCollectionMap.js";

@@ -12,7 +12,7 @@ import {
 	extractSafePropertiesFromMessage,
 	createChildLogger,
 } from "@fluidframework/telemetry-utils/internal";
-import Deque from "double-ended-queue";
+import { Deque } from "@fluid-internal/client-utils";
 import { v4 as uuid } from "uuid";
 
 import { isContainerMessageDirtyable } from "./containerRuntime.js";

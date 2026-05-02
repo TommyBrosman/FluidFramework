@@ -21,7 +21,7 @@ import type {
 	IEnvelope,
 } from "@fluidframework/runtime-definitions/internal";
 import { MockLogger, createChildLogger } from "@fluidframework/telemetry-utils/internal";
-import type Deque from "double-ended-queue";
+import type { Deque } from "@fluid-internal/client-utils";
 import Sinon from "sinon";
 
 import {

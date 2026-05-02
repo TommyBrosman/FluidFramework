@@ -27,6 +27,7 @@ export {
 } from "./typedEventEmitter.js";
 
 export { createEmitter } from "./events/index.js";
+export { Deque } from "./deque.js";
 
 export {
 	type FluidLayer,

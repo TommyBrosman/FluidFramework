@@ -93,6 +93,14 @@ function wrapOnce(self: EventEmitter, eventName: EventName, listener: Listener):
 }
 
 class EventEmitter {
+	// Static members for parity with @types/events. The static `listenerCount`
+	// form was deprecated in Node v3 but is preserved here so type-validation
+	// against previously-published versions of this package keeps working.
+	public static defaultMaxListeners: number = 10;
+	public static listenerCount(emitter: EventEmitter, type: EventName): number {
+		return emitter.listenerCount(type);
+	}
+
 	public on(eventName: EventName, listener: Listener): this {
 		addListener(this, eventName, listener, false);
 		return this;
