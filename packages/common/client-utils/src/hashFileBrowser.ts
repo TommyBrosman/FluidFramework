@@ -3,10 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import * as base64js from "base64-js";
-
 // Note: See 'Isomorphic Code' section in the package README.md
-import { IsoBuffer } from "./bufferBrowser.js";
+import { IsoBuffer, fromByteArray } from "./bufferBrowser.js";
 
 async function digestBuffer(
 	file: IsoBuffer,
@@ -29,7 +27,7 @@ function encodeDigest(hashArray: Uint8Array, encoding: "hex" | "base64"): string
 			return hashHex;
 		}
 		case "base64": {
-			return base64js.fromByteArray(hashArray);
+			return fromByteArray(hashArray);
 		}
 	}
 }

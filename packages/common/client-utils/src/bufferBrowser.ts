@@ -3,7 +3,37 @@
  * Licensed under the MIT License.
  */
 
-import * as base64js from "base64-js";
+// Minimal base64 helpers built on the browser's `btoa`/`atob`, replacing the
+// `base64-js` (npm) polyfill (~1.3 KB in browser bundles). The polyfill is
+// preserved here as a thin Uint8Array⇄base64 wrapper using only built-in APIs;
+// this file is the browser variant of the isomorphic `bufferToString` /
+// `stringToBuffer` (the Node variant uses Node's native `Buffer.toString` /
+// `Buffer.from`, which doesn't go through these helpers).
+export function fromByteArray(arr: Uint8Array): string {
+	// `btoa` takes a binary string (each char's code point in 0..255). Build the
+	// binary string from the byte array, then base64-encode. Chunking avoids
+	// "Maximum call stack size exceeded" on large arrays in Chrome where
+	// `String.fromCharCode(...arr)` would spread tens of thousands of args.
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < arr.length; i += chunkSize) {
+		binary += String.fromCharCode.apply(
+			null,
+			arr.subarray(i, i + chunkSize) as unknown as number[],
+		);
+	}
+	return btoa(binary);
+}
+
+function toByteArray(s: string): Uint8Array {
+	const binary = atob(s);
+	const len = binary.length;
+	const bytes = new Uint8Array(len);
+	for (let i = 0; i < len; i++) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return bytes;
+}
 
 /**
  * Converts a Uint8Array to a string of the provided encoding
@@ -23,7 +53,7 @@ export function Uint8ArrayToString(
 ): string {
 	switch (encoding) {
 		case "base64": {
-			return base64js.fromByteArray(arr);
+			return fromByteArray(arr);
 		}
 		case "utf8":
 		// eslint-disable-next-line unicorn/text-encoding-identifier-case -- this value is supported, just discouraged
@@ -162,7 +192,7 @@ export class IsoBuffer extends Uint8Array {
 		switch (encoding) {
 			case "base64": {
 				const sanitizedString = this.sanitizeBase64(str);
-				const encoded = base64js.toByteArray(sanitizedString);
+				const encoded = toByteArray(sanitizedString);
 				return new IsoBuffer(encoded.buffer);
 			}
 			case "utf8":
