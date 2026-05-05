@@ -19,8 +19,7 @@ import {
 } from "../core/index.js";
 import {
 	type TreeChunk,
-	chunkTree,
-	defaultChunkPolicy,
+	basicOnlyChunkTree,
 	intoDelta,
 	relevantRemovedRoots,
 	updateRefreshers as updateDataChangeRefreshers,
@@ -96,10 +95,11 @@ export class SharedTreeChangeEnricher {
 			cursor.enterField(parentField);
 			cursor.enterNode(0);
 			this.onRefresherAdded?.();
-			return chunkTree(cursor, {
-				policy: defaultChunkPolicy,
-				idCompressor: this.idCompressor,
-			});
+			// Use basic-only chunking: this code path does not need shape-aware UniformChunk
+			// compression, and avoiding the ChunkPolicy indirection lets terser DCE the
+			// schema-driven chunker (UniformChunk, shape inference) from bundles that do not
+			// otherwise pull in `makeTreeChunker`.
+			return basicOnlyChunkTree(cursor);
 		}
 		return undefined;
 	}

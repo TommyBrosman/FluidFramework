@@ -102,6 +102,8 @@ export {
 	chunkTree,
 	chunkField,
 	chunkFieldSingle,
+	basicOnlyChunkField,
+	basicOnlyChunkTree,
 	buildChunkedForest,
 	defaultChunkPolicy,
 	type FieldBatch,

@@ -213,6 +213,80 @@ export function combineChunks(chunks: TreeChunk[]): TreeChunk {
 }
 
 /**
+ * Like {@link chunkField}, but only produces {@link BasicChunk}s for newly-copied content.
+ * (Existing chunks reachable through the cursor are still reused via reference counting,
+ * regardless of their concrete type.)
+ *
+ * @remarks
+ * Use this in code paths that do not need shape-aware {@link UniformChunk} compression.
+ * Because this function does not consult a {@link ChunkPolicy} or perform shape inference,
+ * the schema-driven chunker (`Chunker`, `tryShapeFromNodeSchema`, `uniformChunkFromCursor`,
+ * `UniformChunk`) and the runtime-dead branches of {@link chunkRange} can be tree-shaken
+ * from bundles that never reach `makeTreeChunker` (e.g. consumers using only
+ * {@link ForestTypeReference}).
+ */
+export function basicOnlyChunkField(cursor: ITreeCursorSynchronous): TreeChunk[] {
+	const length = cursor.getFieldLength();
+	const started = cursor.firstNode();
+	debugAssert(
+		() => started === (length !== 0) || "only 0 length fields should not have nodes",
+	);
+	const output: TreeChunk[] = [];
+	let remaining = length;
+	while (remaining > 0) {
+		assert(cursor.mode === CursorLocationType.Nodes, "should be in nodes");
+		let reusedChunk = false;
+		// Reuse fast path: if cursor is at the start of an existing chunk that fits, refcount it.
+		if (cursor.chunkStart === cursor.fieldIndex) {
+			const chunkLength = cursor.chunkLength;
+			if (chunkLength <= remaining) {
+				const chunk = tryGetChunk(cursor);
+				if (chunk !== undefined) {
+					chunk.referenceAdded();
+					output.push(chunk);
+					remaining -= chunkLength;
+					cursor.seekNodes(chunkLength);
+					reusedChunk = true;
+				}
+			}
+		}
+		if (!reusedChunk) {
+			output.push(basicOnlyChunkTree(cursor));
+			remaining -= 1;
+			cursor.nextNode();
+		}
+	}
+	return output;
+}
+
+/**
+ * Like {@link chunkTree}, but only produces {@link BasicChunk}s for newly-copied content.
+ * (An existing {@link BasicChunk} reachable through the cursor is reused via reference counting.)
+ *
+ * @remarks
+ * Use this in code paths that do not need shape-aware {@link UniformChunk} compression.
+ * Because this function does not consult a {@link ChunkPolicy} or perform shape inference,
+ * the schema-driven chunker (`Chunker`, `tryShapeFromNodeSchema`, `uniformChunkFromCursor`,
+ * `UniformChunk`) and the runtime-dead branches of {@link chunkRange} can be tree-shaken
+ * from bundles that never reach `makeTreeChunker` (e.g. consumers using only
+ * {@link ForestTypeReference}).
+ */
+export function basicOnlyChunkTree(cursor: ITreeCursorSynchronous): BasicChunk {
+	const existing = tryGetChunk(cursor);
+	if (existing instanceof BasicChunk) {
+		existing.referenceAdded();
+		return existing;
+	}
+	return new BasicChunk(
+		cursor.type,
+		new Map(
+			mapCursorFields(cursor, () => [cursor.getFieldKey(), basicOnlyChunkField(cursor)]),
+		),
+		cursor.value,
+	);
+}
+
+/**
  * Get a BasicChunk for the current node (and its children) of cursor.
  * This will copy if needed, and add refs to existing chunks which hold the data.
  */

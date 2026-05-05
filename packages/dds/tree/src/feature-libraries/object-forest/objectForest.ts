@@ -49,7 +49,7 @@ import {
 	type Breakable,
 	type WithBreakable,
 } from "../../util/index.js";
-import { chunkField, defaultChunkPolicy } from "../chunked-forest/index.js";
+import { basicOnlyChunkField } from "../chunked-forest/index.js";
 import { defaultSchemaPolicy, FieldKinds } from "../default-schema/index.js";
 import { cursorForMapTreeNode, mapTreeFromCursor } from "../mapTreeCursor.js";
 import { isFieldInSchema, throwOutOfSchema } from "../schemaChecker.js";
@@ -131,7 +131,10 @@ export class ObjectForest implements IEditableForest, WithBreakable {
 	}
 
 	public chunkField(cursor: ITreeCursorSynchronous): TreeChunk[] {
-		return chunkField(cursor, { idCompressor: undefined, policy: defaultChunkPolicy });
+		// ObjectForest does not use shape-aware chunking, so use the basic-only path.
+		// This avoids pulling the schema-driven chunker (UniformChunk, shape inference) into
+		// bundles that only use ForestTypeReference.
+		return basicOnlyChunkField(cursor);
 	}
 
 	public forgetAnchor(anchor: Anchor): void {

@@ -38,7 +38,7 @@ import {
 	type JsonCompatibleReadOnly,
 } from "../../util/index.js";
 // eslint-disable-next-line import-x/no-internal-modules
-import { chunkFieldSingle, defaultChunkPolicy } from "../chunked-forest/chunkTree.js";
+import { basicOnlyChunkField, combineChunks } from "../chunked-forest/chunkTree.js";
 import {
 	defaultIncrementalEncodingPolicy,
 	type FieldBatchEncodingContext,
@@ -221,10 +221,7 @@ export class ForestSummarizer
 		const fieldChanges: [FieldKey, DeltaFieldChanges][] = [];
 		const build: DeltaDetachedNodeBuild[] = [];
 		for (const [fieldKey, field] of fields) {
-			const chunked = chunkFieldSingle(field, {
-				policy: defaultChunkPolicy,
-				idCompressor: this.idCompressor,
-			});
+			const chunked = combineChunks(basicOnlyChunkField(field));
 			const buildId = { minor: allocator.allocate(chunked.topLevelLength) };
 			build.push({
 				id: buildId,

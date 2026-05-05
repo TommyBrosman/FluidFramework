@@ -12,6 +12,8 @@ export {
 	type IChunker,
 	chunkFieldSingle,
 	chunkField,
+	basicOnlyChunkField,
+	basicOnlyChunkTree,
 	combineChunks,
 } from "./chunkTree.js";
 export { buildChunkedForest } from "./chunkedForest.js";

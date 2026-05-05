@@ -36,8 +36,8 @@ import { newChangeAtomIdBTree, type ChangeAtomIdBTree } from "../changeAtomIdBTr
 import {
 	type FieldBatchCodec,
 	type TreeChunk,
-	chunkFieldSingle,
-	defaultChunkPolicy,
+	basicOnlyChunkField,
+	combineChunks,
 } from "../chunked-forest/index.js";
 import { TreeCompressionStrategy } from "../treeCompressionUtils.js";
 
@@ -356,10 +356,7 @@ export function decodeDetachedNodes(
 	});
 	const getChunk = (index: number): TreeChunk => {
 		assert(index < chunks.length, 0x898 /* out of bounds index for build chunk */);
-		return chunkFieldSingle(chunks[index] ?? oob(), {
-			policy: defaultChunkPolicy,
-			idCompressor: context.idCompressor,
-		});
+		return combineChunks(basicOnlyChunkField(chunks[index] ?? oob()));
 	};
 
 	const map: ModularChangeset["builds"] = newChangeAtomIdBTree();
