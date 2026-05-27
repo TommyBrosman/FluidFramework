@@ -587,3 +587,93 @@ apply, constraints, diagnostic exports — features F1–F8 in findings
 §6). Everything visible above the 10 KB cutoff is on the must-run path
 of any read+write SharedTree client, except for the
 `UniformChunk`/`SequenceChunk` runtime-dead surface noted above.
+
+---
+
+## Addendum (post-`1517e1b2b7`): chunked-forest reach with and without `ChunkedForest`
+
+After commit `1517e1b2b7` ("tree: skip shape-aware chunker on the
+default-policy path") routed `ObjectForest.chunkField`,
+`ForestSummarizer`, `SharedTreeChangeEnricher`, and
+`modularChangeCodecV1` decode through `basicOnlyChunkField` /
+`basicOnlyChunkTree`, the lever predicted above ("Real lever (~6 KB)")
+was realized at **−7,526 B parsed / −3,176 B gzip**. `uniformChunk.ts`
+fell to 0 B and `chunkTree.ts` dropped from 2,198 B to 730 B.
+
+This addendum reports two measurements taken after that commit landed:
+the **actual chunked-forest bundle contribution today**, and the
+**counterfactual contribution if `ChunkedForest` were also a direct
+dependency of the scenario** (i.e. the marginal cost of adopting
+`ForestTypeOptimized`).
+
+### What chunked-forest contributes today
+
+Source-map-explorer `--tsv` filtered to
+`feature-libraries/chunked-forest/`:
+
+| File | B |
+|---|---:|
+| `basicChunk.ts` | 8,126 |
+| `codec/compressedEncode.ts` | 3,393 |
+| `codec/chunkDecoding.ts` | 2,564 |
+| `codec/nodeEncoder.ts` | 1,646 |
+| `codec/schemaBasedEncode.ts` | 1,291 |
+| `codec/chunkCodecUtilities.ts` | 831 |
+| `codec/chunkEncodingGeneric.ts` | 772 |
+| `emptyChunk.ts` | 747 |
+| `chunkTree.ts` | 730 |
+| `codec/codecs.ts` | 710 |
+| `codec/format/formatV1.ts` | 633 |
+| `codec/chunkDecodingGeneric.ts` | 479 |
+| `codec/format/formatGeneric.ts` | 450 |
+| `codec/uncompressedEncode.ts` | 423 |
+| `sequenceChunk.ts` | 367 |
+| `codec/format/formatV2.ts` | 98 |
+| `codec/format/versions.ts` | 91 |
+| `codec/incrementalEncodingPolicy.ts` | 19 |
+| **Total** | **23,370** |
+
+The split is roughly **~8 KB `BasicChunk` runtime** (every
+`ObjectForest.chunkField` insert) **+ ~13 KB summary codec**
+(`forestSummarizer` encode/decode + format schemas, used on every
+summary load and write) **+ ~2 KB other** (`chunkTree.ts` basicOnly
+helpers + `combineChunks`, `emptyChunk.ts`, `sequenceChunk.ts` pinned
+by `combineChunks(new SequenceChunk(...))`).
+
+### Counterfactual: `ForestTypeOptimized` exported from the scenario
+
+Adding `ForestTypeOptimized` to the scenario's `index.ts` exports
+makes the closure body — `buildChunkedForest(makeTreeChunker(...))` —
+live, which pulls the full schema-driven chunker into the bundle.
+
+| | ChunkedForest unused | ChunkedForest as direct dep | Δ |
+|---|---:|---:|---:|
+| chunked-forest bytes | 23,370 | 38,111 | **+14,741** |
+| Total bundle parsed | 961,194 | 976,016 | +14,822 |
+
+Per-file changes (only files whose bundle bytes move):
+
+| File | Before | After | Δ |
+|---|---:|---:|---:|
+| `chunkTree.ts` | 730 | 4,508 | **+3,778** (`Chunker`, `tryShapeFromNodeSchema`, `tryShapeFromFieldSchema`, `chunkRange`, `defaultChunkPolicy`, `makeTreeChunker`) |
+| `uniformChunk.ts` | 0 | 5,908 | **+5,908** (`UniformChunk` class, `uniformChunkFromCursor`, `insertValues`, `isStableNodeIdentifier`) |
+| `chunkedForest.ts` | 0 | 5,055 | **+5,055** (`ChunkedForest` class) |
+
+The 81 B residual outside chunked-forest is `defaultSchemaPolicy` and
+a handful of field-kind identifier constants pulled in by
+`makeTreeChunker(schema, defaultSchemaPolicy, …)`.
+
+### Read
+
+- ~62 % of `chunked-forest`'s full footprint is **already in the
+  bundle without `ChunkedForest`** — it's what `ObjectForest`'s read
+  path needs (`BasicChunk`) plus what `ForestSummarizer`'s codec path
+  needs (encode/decode + format schemas). Neither is avoidable for a
+  default `SharedTree` client.
+- The marginal cost of adopting `ForestTypeOptimized` is **~15 KB
+  parsed**, all inside `chunked-forest/` itself: the `ChunkedForest`
+  class (5 KB), the `UniformChunk` representation (6 KB), and the
+  `Chunker` / shape-inference path inside `chunkTree.ts` (4 KB).
+- The codec subtree (Σ ≈ 13 KB) is **unchanged** between the two
+  configurations: the same `forestSummarizer.ts` import edge pins it
+  in both cases, regardless of which forest type the user picks.
