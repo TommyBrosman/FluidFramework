@@ -14,9 +14,17 @@
 // Removed relative to webpack.config.cts:
 //   - AzureDevOpsSymbolsPlugin
 //   - externalizeTree flag / externals
-//   - All polyfills (ProvidePlugin, NormalModuleReplacementPlugin, polyfill aliases)
+//   - All polyfill modules (ProvidePlugin, NormalModuleReplacementPlugin,
+//     and aliases that point at custom polyfill files such as the debug,
+//     TextEncoder/TextDecoder, URL, performance, and uuid_rng polyfills)
 //   - iOS-specific logic
 //   - WORD_FLUID_IMPORTS alias (intentionally omitted)
+//
+// Kept in sync with webpack.config.cts (so this scenario behaves as close as
+// possible to the external bundle measurement):
+//   - DefinePlugin constants matching the ship branch
+//   - resolve.alias DCE knockouts (axios, cross-fetch, crypto, dompurify) so
+//     these heavy deps are tree-shaken away as they are in the external bundle
 //
 import path from "node:path";
 
@@ -83,6 +91,40 @@ const config: webpack.Configuration = {
 		new webpack.optimize.LimitChunkCountPlugin({
 			maxChunks: 1,
 		}),
+		// Mirrors the DefinePlugin constants used by the external ship build so
+		// the same code paths are eliminated by Terser DCE here. Most libraries
+		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
+		// is statically inlined, which is what makes this block load-bearing for
+		// matching the external bundle size.
+		new webpack.DefinePlugin({
+			"console.warn": "console.log",
+			global: {},
+			"globalThis.performance": {
+				mark: () => {
+					/* empty impl */
+				},
+				measure: () => {
+					/* empty impl */
+				},
+				now: () => 0,
+			},
+			"process.browser": true,
+			"process.env.DEBUG": JSON.stringify(""),
+			"process.env.ENABLE_WPM_OVER_OCS_SUPPORT": JSON.stringify(""),
+			"process.env.NODE_DEBUG": JSON.stringify(""),
+			"process.env.NODE_ENV": JSON.stringify("production"),
+			"process.hrtime": undefined,
+			"process.version": JSON.stringify("12.0.0"),
+			"window.performance": {
+				mark: () => {
+					/* empty impl */
+				},
+				measure: () => {
+					/* empty impl */
+				},
+				now: () => 0,
+			},
+		}),
 		// Emits a MessagePack-compressed webpack stats file consumed by
 		// compareBundles.ts. Scenario stats use a scenario-specific filename
 		// (rather than `bundleStats.msp.gz`) so they do not collide with the
@@ -93,6 +135,16 @@ const config: webpack.Configuration = {
 		}),
 	],
 	resolve: {
+		// DCE knockouts mirroring the external ship build. These dependencies
+		// are stripped from the external bundle via `false` aliases; we do the
+		// same here so unused-but-reachable transitive code (e.g. fetch shims,
+		// crypto, markdown sanitizers) is tree-shaken consistently.
+		alias: {
+			axios: false,
+			"cross-fetch": false,
+			crypto: false,
+			dompurify: false,
+		},
 		extensionAlias: {
 			".js": [".js", ".ts"],
 		},

@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { deflateRawSync, gzipSync } from "node:zlib";
 
 import { decompressStatsFile } from "@fluidframework/bundle-size-tools";
 import { Command, Flags } from "@oclif/core";
@@ -98,6 +98,24 @@ function loadStats(analysisDirectory: string, label: string): BundleStats {
 function gzipSize(filePath: string): number | undefined {
 	try {
 		return gzipSync(readFileSync(filePath), { level: 9 }).length;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Calculates the size of a file when compressed as a single .zip archive entry,
+ * using raw DEFLATE at maximum compression level. This is the size of the
+ * compressed payload that would appear inside a .zip entry (i.e. without the
+ * per-entry/per-archive .zip header overhead), making it directly comparable
+ * to `gzipSize` at per-asset granularity.
+ *
+ * @param filePath - The path to the file
+ * @returns The DEFLATE-compressed size in bytes, or undefined if the file cannot be read
+ */
+function zipSize(filePath: string): number | undefined {
+	try {
+		return deflateRawSync(readFileSync(filePath), { level: 9 }).length;
 	} catch {
 		return undefined;
 	}
@@ -263,6 +281,18 @@ interface GzipRow {
 	diff?: number;
 }
 
+/** Represents zip (raw DEFLATE) size comparison data for a single asset. */
+interface ZipRow {
+	/** The asset name */
+	name: string;
+	/** Zip-compressed size of the asset in the base build (if available) */
+	baseZipSize?: number;
+	/** Zip-compressed size of the asset in the current build (if available) */
+	currentZipSize?: number;
+	/** Difference in zip size (current - base) */
+	diff?: number;
+}
+
 /** Represents entrypoint comparison data from parsed bundle statistics. */
 interface EntrypointRow {
 	/** The entrypoint name */
@@ -369,6 +399,7 @@ function runCompare(options: Options): void {
 
 	const changedRows = rows.filter((row) => row.currentStatSize !== row.baseStatSize);
 	const gzipRows: GzipRow[] = [];
+	const zipRows: ZipRow[] = [];
 	if (changedRows.length > 0) {
 		reporter.section("=== Gzip sizes for changed assets ===");
 		reporter.tableHeader(
@@ -393,6 +424,28 @@ function runCompare(options: Options): void {
 				`${diff > 0 ? "+" : ""}${diff}`.padStart(12);
 			reporter.print(line);
 			gzipRows.push({ name: row.name, baseGzipSize, currentGzipSize, diff });
+		}
+
+		reporter.section("=== Zip sizes for changed assets ===");
+		reporter.tableHeader(
+			"Asset".padEnd(40) +
+				"Base Zip".padStart(14) +
+				"Current Zip".padStart(14) +
+				"Diff".padStart(12),
+			82,
+		);
+
+		for (const row of changedRows) {
+			const baseZipSize = zipSize(resolve(baseBuildDirectory, row.name)) ?? 0;
+			const currentZipSize = zipSize(resolve(currentBuildDirectory, row.name)) ?? 0;
+			const diff = currentZipSize - baseZipSize;
+			const line =
+				row.name.padEnd(40) +
+				String(baseZipSize).padStart(14) +
+				String(currentZipSize).padStart(14) +
+				`${diff > 0 ? "+" : ""}${diff}`.padStart(12);
+			reporter.print(line);
+			zipRows.push({ name: row.name, baseZipSize, currentZipSize, diff });
 		}
 	}
 
@@ -443,6 +496,7 @@ function runCompare(options: Options): void {
 			diff: row.currentStatSize - row.baseStatSize,
 		})),
 		gzipChangedAssets: gzipRows,
+		zipChangedAssets: zipRows,
 		entrypoints: entrypointRows,
 	});
 }
