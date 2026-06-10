@@ -4838,6 +4838,9 @@ importers:
       '@cerner/duplicate-package-checker-webpack-plugin':
         specifier: ~2.3.0
         version: 2.3.0(webpack@5.103.0)
+      '@fluid-tools/build-cli':
+        specifier: catalog:buildTools
+        version: 0.65.0(@types/node@22.19.17)(webpack-cli@5.1.4)
       '@fluid-tools/version-tools':
         specifier: catalog:buildTools
         version: 0.65.0(@types/node@22.19.17)
@@ -4862,9 +4865,6 @@ importers:
       eslint:
         specifier: catalog:eslint
         version: 9.39.1(jiti@2.6.1)
-      jiti:
-        specifier: ^2.6.1
-        version: 2.6.1
       mocha:
         specifier: ^11.7.5
         version: 11.7.5
@@ -27977,7 +27977,7 @@ snapshots:
       cjs-module-lexer: 1.4.1
       fflate: 0.8.2
       lru-cache: 11.2.6
-      semver: 7.7.3
+      semver: 7.7.4
       typescript: 5.6.1-rc
       validate-npm-package-name: 5.0.1
 
