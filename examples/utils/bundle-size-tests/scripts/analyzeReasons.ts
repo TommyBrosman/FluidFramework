@@ -4,43 +4,49 @@
  */
 
 /**
- * Analyzes which `@fluidframework/tree` modules end up in a scenario's
- * production bundle, and **why** — i.e. which named import on the
- * `@fluidframework/tree/legacy` line in the scenario entry caused each module
- * to be pulled in.
+ * Analyzes which Fluid-package modules end up in a scenario's production
+ * bundle, and **why** — i.e. which named import in the scenario entry (or
+ * which `--root` module) caused each module to be pulled in.
+ *
+ * Defaults to `@fluidframework/tree`. Use `--root` to point at any other
+ * package's lib module (e.g.
+ * `runtime/container-runtime/containerRuntime.js`) to analyze that package's
+ * forward-reachable fan-out instead.
  *
  * Usage:
  *
  * ```
- * npx jiti scripts/analyzeTreeReasons.ts [--scenario \<name\>] [--out \<path\>]
+ * npx jiti scripts/analyzeReasons.ts [--scenario \<name\>] [--out \<path\>] [--root \<path\>]
  * ```
  *
  * What it does:
  *
- * 1. Parses the scenario entry to find the `@fluidframework/tree/legacy`
- *    import statement and the list of runtime-imported names (type-only
- *    imports are ignored — they cost nothing at runtime).
- * 2. For each runtime-imported name, locates the file in the tree dist
- *    (`packages/dds/tree/lib`) that declares the export (`export class X`,
- *    `export const X`, `export function X`). That file is the API's "owning
- *    module".
- * 3. Builds the scenario's production bundle (`mode: production`,
+ * 1. **No `--root`**: parses the scenario entry to find the
+ *    `@fluidframework/tree/legacy` import statement and the list of
+ *    runtime-imported names. For each name, locates the declaring file in
+ *    `packages/dds/tree/lib`. That file is the API's "owning module".
+ *    **With `--root`**: uses the provided module directly as the single
+ *    owner.
+ * 2. Builds the scenario's production bundle (`mode: production`,
  *    `concatenateModules: true`, terser-minified, exactly as the scenario
  *    config defines), with a source map.
- * 4. Runs source-map-explorer on the produced bundle to get **real
- *    post-minification bundle bytes** per source file. These numbers reflect
- *    what's actually in the shipped bundle (they sum to the bundle size).
- * 5. Builds a second webpack pass with `concatenateModules: false` so the
- *    reasons graph can be inspected. From each owning module identified in
- *    step 2, performs a forward BFS over the reasons graph to collect every
- *    `packages/dds/tree/lib/` module reachable through it.
- * 6. Emits a concise Markdown report. Sizes come from step 4 (real bundle
- *    bytes); attribution comes from step 5.
+ * 3. Runs source-map-explorer on the produced bundle to get **real
+ *    post-minification bundle bytes** per source file across all
+ *    `packages/*` modules. These numbers reflect what's actually in the
+ *    shipped bundle.
+ * 4. Builds a second webpack pass with `concatenateModules: false` so the
+ *    reasons graph can be inspected. From each owning module, performs a
+ *    forward BFS over the reasons graph to collect every module within the
+ *    target package (derived from `--root`, or `packages/dds/tree/lib/` by
+ *    default) reachable through it.
+ * 5. Emits a concise Markdown report. Sizes come from step 3 (real bundle
+ *    bytes); attribution comes from step 4.
  */
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,7 +106,7 @@ function parseFlags(): CliFlags {
 			case "-h":
 			case "--help": {
 				console.log(
-					"Usage: jiti scripts/analyzeTreeReasons.ts [--scenario <name>] [--out <path>] [--cutoff <bytes>] [--root <tree-lib-relpath>]",
+					"Usage: jiti scripts/analyzeReasons.ts [--scenario <name>] [--out <path>] [--cutoff <bytes>] [--root <lib-relpath>]",
 				);
 				process.exit(0);
 			}
@@ -110,8 +116,8 @@ function parseFlags(): CliFlags {
 		}
 	}
 	const defaultBaseName = root === undefined
-		? `tree-reasons-${scenario}.md`
-		: `tree-reasons-${scenario}-${path.basename(root).replace(/\.js$/, "")}.md`;
+		? `reasons-${scenario}.md`
+		: `reasons-${scenario}-${path.basename(root).replace(/\.js$/, "")}.md`;
 	return {
 		scenario,
 		outPath: outPath ?? path.resolve(packageRoot, "bundleAnalysis", defaultBaseName),
@@ -124,7 +130,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(packageRoot, "..", "..", "..");
 const treeLibDir = path.resolve(repoRoot, "packages", "dds", "tree", "lib");
-const TREE_LIB_FRAGMENT = "packages/dds/tree/lib/";
+const DEFAULT_PKG_FRAGMENT = "packages/dds/tree/lib/";
+
+/**
+ * Extract `packages/<pkg-path>/lib/` from a webpack-stats-form module name
+ * like `../../../packages/runtime/container-runtime/lib/containerRuntime.js`.
+ */
+function packageFragmentFromStats(statsName: string): string {
+	const pkgIdx = statsName.indexOf("packages/");
+	if (pkgIdx === -1) {
+		throw new Error(`Cannot derive package fragment from: ${statsName}`);
+	}
+	const libIdx = statsName.indexOf("/lib/", pkgIdx);
+	if (libIdx === -1) {
+		throw new Error(`Module path does not include a /lib/ segment: ${statsName}`);
+	}
+	return statsName.slice(pkgIdx, libIdx + "/lib/".length);
+}
 
 type JitiFactory = (root: string, options?: unknown) => (id: string) => unknown;
 
@@ -166,10 +188,21 @@ async function runWebpack(config: webpack.Configuration): Promise<webpack.StatsC
 	});
 }
 
-/** Pretty short label for a tree module path. */
-function shortName(name: string): string {
-	const idx = name.indexOf(TREE_LIB_FRAGMENT);
-	return idx === -1 ? name : `tree/${name.slice(idx + TREE_LIB_FRAGMENT.length)}`;
+/** Pretty short label for a fluid-package module path. */
+function shortName(name: string, pkgFragment: string): string {
+	const idx = name.indexOf(pkgFragment);
+	if (idx !== -1) {
+		// Strip `packages/<owner>/<pkg>/lib/` down to `<pkg>/<rest>`.
+		const pkgRoot = pkgFragment.slice("packages/".length, -"/lib/".length);
+		const pkgLabel = pkgRoot.split("/").at(-1) ?? pkgRoot;
+		return `${pkgLabel}/${name.slice(idx + pkgFragment.length)}`;
+	}
+	// Fallback: strip a generic `packages/.../lib/` prefix if any.
+	const generic = /packages\/(?:[^/]+\/)*([^/]+)\/lib\//.exec(name);
+	if (generic !== null) {
+		return `${generic[1]}/${name.slice(generic.index + generic[0].length)}`;
+	}
+	return name;
 }
 
 function formatTreePrefix(isLast: boolean[]): { indent: string; branch: string } {
@@ -182,8 +215,8 @@ function formatTreePrefix(isLast: boolean[]): { indent: string; branch: string }
 	return { indent, branch };
 }
 
-function isTreeModule(name: string | undefined): boolean {
-	return name?.includes(TREE_LIB_FRAGMENT) ?? false;
+function isInTargetPackage(name: string | undefined, pkgFragment: string): boolean {
+	return name?.includes(pkgFragment) ?? false;
 }
 
 /**
@@ -291,9 +324,11 @@ function buildGraph(modules: StatsModule[]): Graph {
 }
 
 /**
- * BFS forward from `start`, returning every tree module reachable.
+ * BFS forward from `start`, returning every module in the target package
+ * reachable through the graph (traversal walks the full graph; only modules
+ * matching `pkgFragment` are returned).
  */
-function reachableTreeModules(graph: Graph, start: string): Set<string> {
+function reachablePackageModules(graph: Graph, start: string, pkgFragment: string): Set<string> {
 	const seen = new Set<string>();
 	const stack = [start];
 	while (stack.length > 0) {
@@ -305,7 +340,7 @@ function reachableTreeModules(graph: Graph, start: string): Set<string> {
 		}
 	}
 	const out = new Set<string>();
-	for (const n of seen) if (isTreeModule(n)) out.add(n);
+	for (const n of seen) if (isInTargetPackage(n, pkgFragment)) out.add(n);
 	return out;
 }
 
@@ -321,14 +356,18 @@ interface SmeResult {
 }
 
 /**
- * Run source-map-explorer on the bundle and return a map from tree-module
- * stats name (e.g. `../../../packages/dds/tree/lib/foo.js`) to bundle bytes.
+ * Run source-map-explorer on the bundle and return a map from
+ * webpack-stats-form module name (e.g.
+ * `../../../packages/dds/tree/lib/foo.js`) to bundle bytes, covering every
+ * `packages/<pkg>/src/...` source file present. `targetTotal` is the subset
+ * of those bytes from the target package (matched by `pkgFragment`).
  */
-function smeSizesByTreeModule(
+function smePackageSizes(
 	bundlePath: string,
 	scenario: string,
-): { sizes: Map<string, number>; total: number; treeTotal: number } {
-	const tmpJson = path.resolve("/tmp", `sme-${scenario}.json`);
+	pkgFragment: string,
+): { sizes: Map<string, number>; total: number; targetTotal: number } {
+	const tmpJson = path.resolve(tmpdir(), `sme-${scenario}.json`);
 	execFileSync(
 		"npx",
 		["source-map-explorer", "--no-border-checks", "--json", tmpJson, bundlePath],
@@ -337,26 +376,32 @@ function smeSizesByTreeModule(
 	const j = JSON.parse(readFileSync(tmpJson, "utf8")) as SmeResult;
 	const sizes = new Map<string, number>();
 	let total = 0;
-	let treeTotal = 0;
+	let targetTotal = 0;
 	for (const result of j.results) {
 		total = result.totalBytes;
 		for (const [file, info] of Object.entries(result.files)) {
 			// source-map-explorer keys look like:
-			//   webpack://encapsulatedWithSharedTree/packages/dds/tree/src/foo.ts
-			// We want the same module key used in webpack stats:
-			//   ../../../packages/dds/tree/lib/foo.js
-			// Map src/<x>.ts -> lib/<x>.js for tree.
-			const idx = file.indexOf("packages/dds/tree/src/");
+			//   webpack://encapsulatedWithSharedTree/packages/runtime/container-runtime/src/foo.ts
+			// We want the same module key webpack stats uses:
+			//   ../../../packages/runtime/container-runtime/lib/foo.js
+			// Map src/<x>.ts -> lib/<x>.js, regardless of which fluid package.
+			const idx = file.indexOf("packages/");
 			if (idx === -1) continue;
-			const subpath = file
-				.slice(idx + "packages/dds/tree/src/".length)
+			const afterPackages = file.slice(idx + "packages/".length);
+			const srcIdx = afterPackages.indexOf("/src/");
+			if (srcIdx === -1) continue;
+			const pkg = afterPackages.slice(0, srcIdx);
+			const subpath = afterPackages
+				.slice(srcIdx + "/src/".length)
 				.replace(/\.tsx?$/, ".js");
-			const statsName = `../../../packages/dds/tree/lib/${subpath}`;
+			const statsName = `../../../packages/${pkg}/lib/${subpath}`;
 			sizes.set(statsName, (sizes.get(statsName) ?? 0) + info.size);
-			treeTotal += info.size;
+			if (statsName.includes(pkgFragment)) {
+				targetTotal += info.size;
+			}
 		}
 	}
-	return { sizes, total, treeTotal };
+	return { sizes, total, targetTotal };
 }
 
 interface ApiRow {
@@ -371,25 +416,36 @@ interface ApiRow {
 function buildReport(
 	scenario: string,
 	flags: { runtime: string[]; typeOnly: string[] },
-	owners: Map<string, string>,
 	graph: Graph,
 	apiRows: ApiRow[],
 	moduleSizes: Map<string, number>,
 	bundleTotal: number,
-	treeTotal: number,
+	targetTotal: number,
 	bundlePath: string,
 	cutoff: number,
+	pkgFragment: string,
+	rootMode: boolean,
 ): string {
+	// Label for the package being analyzed, e.g.
+	// `packages/dds/tree/lib/` -> `@fluidframework/tree`-ish: just last segment.
+	const pkgRoot = pkgFragment.slice("packages/".length, -"/lib/".length);
+	const pkgLabel = pkgRoot.split("/").at(-1) ?? pkgRoot;
 	const lines: string[] = [];
-	lines.push(`# Tree imports — scenario \`${scenario}\``);
+	lines.push(`# ${pkgLabel} reasons — scenario \`${scenario}\``);
 	lines.push("");
 	lines.push(
-		`Bundle: \`${path.basename(bundlePath)}\` — ${bundleTotal.toLocaleString()} B total · ${treeTotal.toLocaleString()} B from \`@fluidframework/tree\` (${((treeTotal / bundleTotal) * 100).toFixed(1)}%).`,
+		`Bundle: \`${path.basename(bundlePath)}\` — ${bundleTotal.toLocaleString()} B total · ${targetTotal.toLocaleString()} B from \`${pkgLabel}\` (${((targetTotal / bundleTotal) * 100).toFixed(1)}%).`,
 	);
 	lines.push("");
-	lines.push(
-		`Scenario imports from \`@fluidframework/tree/legacy\`: **${flags.runtime.length} runtime**, **${flags.typeOnly.length} type-only**.`,
-	);
+	if (rootMode) {
+		lines.push(
+			`Analysis rooted at: **${flags.runtime.length === 1 ? `\`${flags.runtime[0]}\`` : `${flags.runtime.length} modules`}** (via \`--root\`).`,
+		);
+	} else {
+		lines.push(
+			`Scenario imports from \`@fluidframework/tree/legacy\`: **${flags.runtime.length} runtime**, **${flags.typeOnly.length} type-only**.`,
+		);
+	}
 	lines.push("");
 	lines.push(
 		"All sizes below are **real production bundle bytes** (post-minify, post-concat) attributed via the source map.",
@@ -399,20 +455,20 @@ function buildReport(
 	lines.push(`## Per-API summary`);
 	lines.push("");
 	lines.push(
-		"- `Reachable B` — bytes of all tree modules forward-reachable from this API's owning module.",
+		`- \`Reachable B\` — bytes of all \`${pkgLabel}\` modules forward-reachable from this API's owning module.`,
 	);
 	lines.push(
 		"- `Unique B` — bytes that are reachable **only** from this API (no other listed API reaches them). Removing the API would let tree-shaking drop these.",
 	);
 	lines.push(
-		"- `Modules` — count of tree modules forward-reachable from this API's owning module.",
+		`- \`Modules\` — count of \`${pkgLabel}\` modules forward-reachable from this API's owning module.`,
 	);
 	lines.push("");
 	lines.push("| API | Owner module | Reachable B | Unique B | Modules |");
 	lines.push("|---|---|---:|---:|---:|");
 	const sorted = [...apiRows].sort((a, b) => b.reachableSize - a.reachableSize);
 	for (const r of sorted) {
-		const owner = r.owner === undefined ? "(not found)" : shortName(r.owner);
+		const owner = r.owner === undefined ? "(not found)" : shortName(r.owner, pkgFragment);
 		lines.push(
 			`| \`${r.api}\` | \`${owner}\` | ${r.reachableSize.toLocaleString()} | ${r.uniqueSize.toLocaleString()} | ${r.reachableModules.length} |`,
 		);
@@ -444,8 +500,8 @@ function buildReport(
 	}
 
 	const printedGlobally = new Set<string>();
-	const treeChildren = (m: string): string[] =>
-		[...(graph.children.get(m) ?? [])].filter((c) => isTreeModule(c));
+	const targetChildren = (m: string): string[] =>
+		[...(graph.children.get(m) ?? [])].filter((c) => isInTargetPackage(c, pkgFragment));
 
 	// Compute subtree-byte totals (treating the spanning DFS tree from this
 	// root, where each module is counted once; descendants encountered later
@@ -457,7 +513,7 @@ function buildReport(
 			if (counted.has(node)) return 0;
 			counted.add(node);
 			let total = moduleSizes.get(node) ?? 0;
-			const kids = treeChildren(node).sort(
+			const kids = targetChildren(node).sort(
 				(a, b) => (moduleSizes.get(b) ?? 0) - (moduleSizes.get(a) ?? 0),
 			);
 			for (const k of kids) total += dfs(k);
@@ -482,7 +538,7 @@ function buildReport(
 	): void {
 		const { indent, branch } = formatTreePrefix(isLast);
 		if (printedGlobally.has(node)) {
-			lines.push(`${indent}${branch}\`${shortName(node)}\` (see above)`);
+			lines.push(`${indent}${branch}\`${shortName(node, pkgFragment)}\` (see above)`);
 			return;
 		}
 		printedGlobally.add(node);
@@ -491,9 +547,9 @@ function buildReport(
 		const sh = sharersOf(node, currentApi);
 		const sharedLabel = sh.length === 0 ? "" : `  [shared: ${sh.join(", ")}]`;
 		lines.push(
-			`${indent}${branch}\`${shortName(node)}\`  ${ownB.toLocaleString()} B / Σ ${subB.toLocaleString()} B${sharedLabel}`,
+			`${indent}${branch}\`${shortName(node, pkgFragment)}\`  ${ownB.toLocaleString()} B / Σ ${subB.toLocaleString()} B${sharedLabel}`,
 		);
-		const allKids = treeChildren(node).sort(
+		const allKids = targetChildren(node).sort(
 			(a, b) => (subtree.get(b) ?? 0) - (subtree.get(a) ?? 0),
 		);
 		// Apply cutoff: a child is shown if it's a `(see above)` reference
@@ -525,12 +581,12 @@ function buildReport(
 
 	for (const r of sorted) {
 		if (r.owner === undefined) {
-			lines.push(`### \`${r.api}\` — owner not located in tree dist`);
+			lines.push(`### \`${r.api}\` — owner not located in package lib`);
 			lines.push("");
 			continue;
 		}
 		lines.push(
-			`### \`${r.api}\` (${shortName(r.owner)}) — ${r.reachableSize.toLocaleString()} B reachable, ${r.uniqueSize.toLocaleString()} B unique`,
+			`### \`${r.api}\` (${shortName(r.owner, pkgFragment)}) — ${r.reachableSize.toLocaleString()} B reachable, ${r.uniqueSize.toLocaleString()} B unique`,
 		);
 		lines.push("");
 		const subtree = computeSubtreeSize(r.owner, printedGlobally);
@@ -545,19 +601,19 @@ function buildReport(
 	const attributed = new Set<string>();
 	for (const r of apiRows) for (const m of r.reachableModules) attributed.add(m);
 	const orphans = [...moduleSizes.entries()]
-		.filter(([m]) => !attributed.has(m))
+		.filter(([m]) => isInTargetPackage(m, pkgFragment) && !attributed.has(m))
 		.sort((a, b) => b[1] - a[1]);
 	if (orphans.length > 0) {
-		lines.push(`## Tree modules in bundle but not attributed`);
+		lines.push(`## ${pkgLabel} modules in bundle but not attributed`);
 		lines.push("");
 		lines.push(
-			"These tree modules show up in source-map-explorer but no API's owning module reaches them in the reasons graph (typically barrel/side-effect-only modules).",
+			`These \`${pkgLabel}\` modules show up in source-map-explorer but no API's owning module reaches them in the reasons graph (typically barrel/side-effect-only modules).`,
 		);
 		lines.push("");
 		lines.push("| Module | B |");
 		lines.push("|---|---:|");
 		for (const [m, sz] of orphans) {
-			lines.push(`| \`${shortName(m)}\` | ${sz.toLocaleString()} |`);
+			lines.push(`| \`${shortName(m, pkgFragment)}\` | ${sz.toLocaleString()} |`);
 		}
 		lines.push("");
 	}
@@ -566,16 +622,24 @@ function buildReport(
 }
 
 /**
- * Normalize a `--root` argument to the webpack-stats module name.
- * Accepts:
- *   - shortName form: `tree/shared-tree/treeCheckout.js`
- *   - lib-relative: `shared-tree/treeCheckout.js`
- *   - stats form: `../../../packages/dds/tree/lib/shared-tree/treeCheckout.js`
+ * Normalize a `--root` argument to the webpack-stats module name. Accepts
+ * stats form (`../../../packages/runtime/container-runtime/lib/x.js`),
+ * repo-relative (`packages/runtime/container-runtime/lib/x.js`), stripped
+ * (`runtime/container-runtime/lib/x.js`), or the legacy tree shorthand
+ * (`tree/shared-tree/treeCheckout.js`, `shared-tree/treeCheckout.js`).
  */
 function normalizeRoot(raw: string): string {
 	if (raw.startsWith("../") || raw.startsWith("./")) return raw;
-	const stripped = raw.startsWith("tree/") ? raw.slice("tree/".length) : raw;
-	return `../../../packages/dds/tree/lib/${stripped}`;
+	if (raw.startsWith("packages/")) return `../../../${raw}`;
+	if (raw.startsWith("tree/")) {
+		return `../../../packages/dds/tree/lib/${raw.slice("tree/".length)}`;
+	}
+	if (raw.includes("/lib/")) {
+		// Stripped form: `<pkg-path>/lib/<rest>`.
+		return `../../../packages/${raw}`;
+	}
+	// Backward-compat: bare `<rest>` is treated as tree lib-relative.
+	return `../../../packages/dds/tree/lib/${raw}`;
 }
 
 async function main(): Promise<void> {
@@ -583,6 +647,7 @@ async function main(): Promise<void> {
 
 	let imports: { runtime: string[]; typeOnly: string[] };
 	let owners: Map<string, string> = new Map();
+	let pkgFragment: string = DEFAULT_PKG_FRAGMENT;
 	if (flags.root === undefined) {
 		console.log(`[1/5] Parsing scenario entry imports...`);
 		imports = parseEntryImports(flags.scenario);
@@ -590,26 +655,27 @@ async function main(): Promise<void> {
 		console.log(`  ${imports.typeOnly.length} type-only: ${imports.typeOnly.join(", ")}`);
 	} else {
 		const normalized = normalizeRoot(flags.root);
-		const apiName = shortName(normalized);
-		console.log(`[1/5] Using explicit --root override: ${apiName}`);
+		pkgFragment = packageFragmentFromStats(normalized);
+		const apiName = shortName(normalized, pkgFragment);
+		console.log(`[1/5] Using explicit --root override: ${apiName} (pkg: ${pkgFragment})`);
 		imports = { runtime: [apiName], typeOnly: [] };
 		owners = new Map([[apiName, normalized]]);
 	}
 
 	if (flags.root === undefined) {
 		console.log(`[2/5] Locating owning modules in tree dist...`);
-	} else {
-		console.log(`[2/5] Skipping owning-module lookup (using --root).`);
-	}
-	if (!existsSync(treeLibDir)) {
-		throw new Error(`Tree dist not found at ${treeLibDir}. Build @fluidframework/tree first.`);
-	}
-	if (flags.root === undefined) {
+		if (!existsSync(treeLibDir)) {
+			throw new Error(
+				`Tree dist not found at ${treeLibDir}. Build @fluidframework/tree first.`,
+			);
+		}
 		owners = findOwningModules(imports.runtime);
 		for (const name of imports.runtime) {
 			const o = owners.get(name);
-			console.log(`  ${name} -> ${o === undefined ? "(not found)" : shortName(o)}`);
+			console.log(`  ${name} -> ${o === undefined ? "(not found)" : shortName(o, pkgFragment)}`);
 		}
+	} else {
+		console.log(`[2/5] Skipping owning-module lookup (using --root).`);
 	}
 
 	console.log(`[3/5] Building production bundle...`);
@@ -619,7 +685,7 @@ async function main(): Promise<void> {
 		mode: "production",
 		output: {
 			...baseConfig.output,
-			path: path.resolve("/tmp", `analyzeTreeReasons-prod-${flags.scenario}`),
+			path: path.resolve(tmpdir(), `analyzeReasons-prod-${flags.scenario}`),
 		},
 		plugins: (baseConfig.plugins ?? []).filter(
 			(p: unknown) =>
@@ -643,9 +709,10 @@ async function main(): Promise<void> {
 	}
 
 	console.log(`[4/5] Running source-map-explorer for real bundle bytes...`);
-	const { sizes, total, treeTotal } = smeSizesByTreeModule(bundlePath, flags.scenario);
+	const { sizes, total, targetTotal } = smePackageSizes(bundlePath, flags.scenario, pkgFragment);
+	const targetCount = [...sizes.keys()].filter((k) => k.includes(pkgFragment)).length;
 	console.log(
-		`  Bundle ${total.toLocaleString()} B total, ${treeTotal.toLocaleString()} B from tree (${sizes.size} tree modules).`,
+		`  Bundle ${total.toLocaleString()} B total, ${targetTotal.toLocaleString()} B from ${pkgFragment} (${targetCount} modules).`,
 	);
 
 	console.log(`[5/5] Building reasons graph (no concat)...`);
@@ -661,7 +728,7 @@ async function main(): Promise<void> {
 		},
 		output: {
 			...baseConfig.output,
-			path: path.resolve("/tmp", `analyzeTreeReasons-graph-${flags.scenario}`),
+			path: path.resolve(tmpdir(), `analyzeReasons-graph-${flags.scenario}`),
 		},
 		plugins: (baseConfig.plugins ?? []).filter(
 			(p: unknown) =>
@@ -690,7 +757,7 @@ async function main(): Promise<void> {
 			});
 			continue;
 		}
-		const reach = reachableTreeModules(graph, owner);
+		const reach = reachablePackageModules(graph, owner, pkgFragment);
 		reach.add(owner);
 		reachByApi.set(name, reach);
 		const reachableSize = [...reach].reduce((s, m) => s + (sizes.get(m) ?? 0), 0);
@@ -726,14 +793,15 @@ async function main(): Promise<void> {
 	const report = buildReport(
 		flags.scenario,
 		imports,
-		owners,
 		graph,
 		apiRows,
 		sizes,
 		total,
-		treeTotal,
+		targetTotal,
 		bundlePath,
 		flags.cutoff,
+		pkgFragment,
+		flags.root !== undefined,
 	);
 	writeFileSync(flags.outPath, report);
 	console.log(`\nReport written to: ${flags.outPath}`);

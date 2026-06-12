@@ -27,7 +27,7 @@ Branch history:
   --tsv`.
 - Webpack 5, `mode: production`, `concatenateModules: true`, single chunk
   (`LimitChunkCountPlugin({ maxChunks: 1 })`), terser minified.
-- Per-API import-chain analysis: `scripts/analyzeTreeReasons.ts` — webpack
+- Per-API import-chain analysis: `scripts/analyzeReasons.ts` — webpack
   reasons graph attributed via source-map-explorer to per-module bundle
   bytes, rooted at each runtime-imported API's owning module.
 
@@ -345,8 +345,8 @@ called.
 
 ## 6. Per-API import-chain analysis
 
-Generated with `scripts/analyzeTreeReasons.ts`
-([source](../../scripts/analyzeTreeReasons.ts)) — webpack reasons graph
+Generated with `scripts/analyzeReasons.ts`
+([source](../../scripts/analyzeReasons.ts)) — webpack reasons graph
 attributed via source-map-explorer to per-module bundle bytes, rooted at
 each runtime-imported API's owning module:
 
@@ -432,7 +432,7 @@ to a small set of methods/state on `TreeCheckout` and a corresponding
 import edge that pins additional infrastructure.
 
 The numbers below are **structural estimates** derived from method bodies
-and the chain analysis (file sizes from `analyzeTreeReasons.ts`); precise
+and the chain analysis (file sizes from `analyzeReasons.ts`); precise
 parsed-byte savings require stub-and-measure passes.
 
 `treeCheckout.js` itself is **17,033 B** of own bytes. Roughly half of
@@ -628,7 +628,7 @@ split landed −4,702 B parsed in stub form.)
 6. **`dds/sequence` exports-granularity audit** (N7) for `Marker` /
    `ReferenceType` / `refGetTileLabels`. Theoretical ceiling up to
    ~130 KB but real win likely much smaller given internal coupling.
-   Needs an `analyzeTreeReasons`-style audit rooted at the `merge-tree`
+   Needs an `analyzeReasons`-style audit rooted at the `merge-tree`
    barrel.
 
 ### Hard pass — central plumbing
