@@ -271,7 +271,7 @@ scenario's bundle.
 | F8 | Diagnostic exports (`exportVerbose`, `getRemovedRoots`, `assertNoUntrackedRoots`, plus their `SharedTreeKernel.contentSnapshot`/`exportVerbose` wirings) | **−1,967 B parsed (stubbed)** | 10 test files including snapshot-consistency suites use `contentSnapshot()` for tree comparison. Test-rewrite cost vastly exceeds the win. |
 | N5 | `semver-ts` inline (runtime side only) | <500 B realistic | `dds/tree` pins most of the package via `gt`/`lt` in `modular-schema/modularChangeFamily.ts` and `codec/versioned/codec.ts`; removing only the runtime side leaves the polyfill in. Findings doc's earlier ~2.2 KB estimate predates the polyfill swaps that already shrank the surrounding bundle. |
 | N6 | `debug` from default Loader path | ~4.7 KB (`debug/src/browser.js` 2,632 B + `ms` 1,402 B + remainder) | `DebugLogger` is part of the loader's legacy public surface; `localStorage.debug = "fluid:*"` is a documented diagnostic for partner teams. Mitigation requires a public-API entry-point split. |
-| N7 | `dds/sequence` tree-shake from `Marker`/`ReferenceType`/`refGetTileLabels` | up to ~130 KB theoretical | Re-export shape change in `dds/merge-tree/src/index.ts` plus per-symbol audit and likely package-`exports`-level granularity. Medium-to-high risk; not yet attempted. |
+| N7 | `dds/merge-tree`/`dds/sequence` tree-shake from `Marker`/`ReferenceType`/`refGetTileLabels` | **0 B (this scenario)**; ≤9,250 B asymmetric ceiling, **not barrel-fixable** | **Audited via removal experiments.** The "~130 KB" was the *full* merge-tree (92,732 B) + sequence (40,005 B) graph — pulled by `SharedString`/`createOverlappingIntervalsIndex`, **not** by these three symbols. Dropping the three from the entry moved the bundle by **−53 B** (minification noise; merge-tree subtotal even rose 6 B). Imported *alone* (no `SharedString`), the three pull only **9,250 B** of merge-tree and **0 B** of sequence. Of that, `ReferenceType`+`refGetTileLabels` are **374 B** (`ops.ts` 242 + `referencePositions.ts` 132 — already isolated, barrel shakes cleanly) and `Marker` is **~8,876 B** via real segment-class coupling (`localReference.ts` 4,854, `mergeTreeNodes.ts` 2,231, `mergeTreeTracking.ts` 661, `segmentInfos.ts` 652, …) that no re-export / package-`exports` change can break. |
 | F1+F2 | Branching + revertibles subclass split | ~6,500 own + ~2,500 transitive | Architectural; introduces `BranchingTreeCheckout extends TreeCheckout` and a feature-flag arg to `createTreeCheckout`. Public-API impact on `TreeView.fork()`, `TreeBranchAlpha`, the `getRevertible` callback. **Caveat**: savings only materialize when a consumer uses the non-branching subclass — since `SharedTree.view` exposes `fork`/`createSharedBranch` unconditionally, this scenario would still get the branching subclass. Needs a `SharedTree`-side split too to land the bytes. |
 | — | `lz4js` lazy-load | ~4.7 KB | `OpCompressor`/`OpDecompressor` are eagerly instantiated in `containerRuntime.ts`; making them lazy would inject async boundaries into op processing for inbound-decompression, which can't always know up-front that an op is compressed. |
 | — | `@tylerbu/sorted-btree-es6` `union`/`decompose` replacement | ~7 KB | `mergeTupleBTrees` is hot-path code in `modularChangeFamily.ts` compose; replacing the optimized union with naive merge trades bundle size for runtime perf. |
@@ -625,11 +625,10 @@ split landed −4,702 B parsed in stub form.)
 5. **`debug` from default Loader path** (N6) via a `DebugLogger`
    entrypoint split. ~4.7 KB. Risk: medium — diagnostic that partner
    teams use today.
-6. **`dds/sequence` exports-granularity audit** (N7) for `Marker` /
-   `ReferenceType` / `refGetTileLabels`. Theoretical ceiling up to
-   ~130 KB but real win likely much smaller given internal coupling.
-   Needs an `analyzeReasons`-style audit rooted at the `merge-tree`
-   barrel.
+
+> N7 (`dds/merge-tree` exports-granularity audit) is **closed** — audited
+> with **0 B** realizable win for this scenario; see §5. The "~130 KB"
+> ceiling was a `SharedString`-pulled-graph artifact, not barrel coupling.
 
 ### Hard pass — central plumbing
 

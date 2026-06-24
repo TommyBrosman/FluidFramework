@@ -86,7 +86,6 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 | Reduction | Approx. impact (parsed) | LOE | Status / notes |
 |---|---:|---|---|
 | **Read-only checkout entrypoint** — split `TreeCheckout` so a variant omits `defaultEditBuilder`, dropping the entire write pillar (`sequence-field` + `modularChangeFamily` + `optional-field`). | up to **~70 KB** (read-only consumers only; **0** for read+write) | **Very high** | Surfaced by per-API analysis, **not yet attempted**. Architectural: `TreeCheckout` must expose `editor`/`transaction`/`applyChange` only on the editing variant. Single clean cut point (one import edge). |
-| **`dds/sequence` exports-granularity audit (N7)** — re-export shape change in `dds/merge-tree` barrel + per-symbol audit for `Marker`/`ReferenceType`/`refGetTileLabels`. | theoretical ceiling ~130 KB; **realistic likely far smaller** | **High** | **Not yet attempted.** Needs an `analyzeReasons`-style audit rooted at the merge-tree barrel; medium-to-high risk from internal coupling. |
 | **`SchemaFactory.array`/`.map` prototype detach (#6)** — make array/map node-kind infra opt-in. | **−11,044** ceiling / −2,830 gzip; **0** if the consumer uses any of `array`/`map`/`arrayRecursive`/`mapRecursive` | **Medium** | Stub-measured. This scenario uses both array and map, so saving here is 0 — documented as the upper bound for asymmetric consumers. |
 | **Closed-kind-set `ModularChangeFamily` monomorphization** — replace runtime `getFieldKind` map dispatch with a build-time closed set so terser can resolve handlers statically. | **~10 KB** ceiling | **Very high** | Research-grade. Correctness, layer-compat, and persisted-format implications. |
 | **F1+F2 branching + revertibles subclass split** — `BranchingTreeCheckout extends TreeCheckout`, paired with a `SharedTree` view-side split so branching is opt-in. | **~9 KB** combined ceiling; **0** without the `SharedTree`-side change | **High** | Cross-cutting public-API impact (`TreeView.fork()`, `TreeBranchAlpha`, `getRevertible`). `SharedTree.view` exposes `fork`/`createSharedBranch` unconditionally today, so both ends must split. |
@@ -118,3 +117,15 @@ Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 `deltaManager.ts`, `connectionManager.ts`) is on hot paths and not
 amenable to package-level lazy-loading without injecting async boundaries
 into op processing. See findings §5 and TREE_CHECKOUT_ANALYSIS §7.
+
+- **`dds/merge-tree` exports-granularity audit (N7)** for
+  `Marker`/`ReferenceType`/`refGetTileLabels` — **audited, 0 B realizable.**
+  The headline "~130 KB" was the full merge-tree (92,732 B) + sequence
+  (40,005 B) graph, pulled into this scenario by `SharedString` /
+  `createOverlappingIntervalsIndex`, not by these three symbols. Removing
+  the three from the entry moved the bundle **−53 B** (noise). Imported
+  alone they pull only **9,250 B** of merge-tree (0 B sequence); the enum +
+  function are **374 B** and already shake cleanly, while `Marker`'s
+  **~8,876 B** is real segment-class coupling (`localReference.ts`,
+  `mergeTreeNodes.ts`, …) that a barrel/`exports` reshape cannot break.
+  See findings §5 (N7).
