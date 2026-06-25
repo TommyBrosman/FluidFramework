@@ -12996,9 +12996,6 @@ importers:
       '@fluidframework/telemetry-utils':
         specifier: workspace:~
         version: link:../../utils/telemetry-utils
-      '@tylerbu/sorted-btree-es6':
-        specifier: ^2.1.1
-        version: 2.1.1
       lz4js:
         specifier: ^0.2.0
         version: 0.2.0

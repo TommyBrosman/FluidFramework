@@ -180,7 +180,6 @@
 		"@fluidframework/runtime-definitions": "workspace:~",
 		"@fluidframework/runtime-utils": "workspace:~",
 		"@fluidframework/telemetry-utils": "workspace:~",
-		"@tylerbu/sorted-btree-es6": "^2.1.1",
 		"lz4js": "^0.2.0",
 		"semver-ts": "^1.0.3",
 		"tslib": "^2.8.1",
