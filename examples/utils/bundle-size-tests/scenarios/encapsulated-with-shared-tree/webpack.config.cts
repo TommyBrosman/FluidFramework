@@ -76,6 +76,14 @@ const config: webpack.Configuration = {
 		new webpack.optimize.LimitChunkCountPlugin({
 			maxChunks: 1,
 		}),
+		// Fluid container-runtime delay-loads its summarizer into a separate "summarizerDelayLoadedModule"
+		// chunk via a dynamic import. This scenario models an interactive-only client that never runs the
+		// summarizer (that happens service-side), so replace that module with a lightweight stub to keep it
+		// out of the single-file bundle.
+		new webpack.NormalModuleReplacementPlugin(
+			/summaryDelayLoadedModule[\\/]index\.js$/,
+			path.resolve(__dirname, "src/polyfills/summaryDelayLoadedModuleStub.ts"),
+		),
 	],
 	resolve: {
 		extensionAlias: {
