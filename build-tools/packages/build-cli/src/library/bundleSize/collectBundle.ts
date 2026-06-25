@@ -67,9 +67,17 @@ export interface CollectBundleOptions {
 	 */
 	readonly forceCleanBuild: boolean;
 	/**
-	 * Package root whose webpack bundles are built and whose `analyzer.json` is collected.
+	 * Package root whose `build:compile` is run to compile the package and its dependencies.
 	 */
 	readonly packageDir: string;
+	/**
+	 * Directory whose `webpack` build is run and whose `analyzer.json` is collected. Defaults to
+	 * {@link CollectBundleOptions.packageDir} when not specified, so a single directory can serve as
+	 * both the compiled package and the webpack root. Set this when the webpack config lives in a
+	 * different directory than the package being compiled (e.g. a scenario subdirectory that shares
+	 * its parent package's compiled output).
+	 */
+	readonly webpackDir?: string;
 	/**
 	 * Directory under which per-label analyzer stats are saved.
 	 */
@@ -210,15 +218,27 @@ function cleanWorkspace(repoRoot: string): void {
 }
 
 /**
- * Compiles this package and its dependencies, then builds its webpack bundles. Uses
- * `build:compile` (not the full `build`) to skip the lint / docs / api-report tasks, which are
+ * Compiles the package and its dependencies (in `packageRoot`), then builds the webpack bundles
+ * (in `webpackRoot`). These are usually the same directory, but may differ when the webpack config
+ * lives in a separate directory (e.g. a scenario) that reuses its parent package's compiled output.
+ * Uses `build:compile` (not the full `build`) to skip the lint / docs / api-report tasks, which are
  * unnecessary here and prone to unrelated failures across revisions.
  */
-function buildPackage(packageRoot: string): void {
-	console.log(`\nCompiling bundle-size-tests and its dependencies in ${packageRoot}...`);
+function buildPackage(packageRoot: string, webpackRoot: string): void {
+	console.log(`\nCompiling the package and its dependencies in ${packageRoot}...`);
 	run("npm run build:compile", packageRoot);
-	console.log(`\nBuilding bundles with webpack in ${packageRoot}...`);
-	run("npm run webpack", packageRoot);
+	console.log(`\nBuilding bundles with webpack in ${webpackRoot}...`);
+	if (resolve(webpackRoot) === resolve(packageRoot)) {
+		// Same directory: run the package's own `webpack` script.
+		run("npm run webpack", webpackRoot);
+	} else {
+		// The webpack directory differs from the package directory (e.g. a scenario with its own
+		// webpack config but no package.json). `npm run webpack` would walk up to the package's
+		// package.json and run with cwd at the package root, building the wrong config. Invoke
+		// webpack directly with cwd = webpackRoot so its own (auto-detected) webpack.config is used
+		// and process.cwd()-relative outputs land here.
+		run("npx webpack", webpackRoot);
+	}
 }
 
 // --- Environment prep ---
@@ -282,10 +302,11 @@ async function prepareRevisionBuild(
 	sha: string,
 	outerRepoRoot: string,
 	packageDir: string,
+	webpackDir: string,
 	innerRepoRoot: string,
-): Promise<{ repoRoot: string; packageRoot: string }> {
+): Promise<{ repoRoot: string; packageRoot: string; webpackRoot: string }> {
 	await ensureInnerRepoAtRevision(sha, outerRepoRoot, innerRepoRoot);
-	// Same package inside the inner repo, via its path relative to the repo root.
+	// Same package/webpack directories inside the inner repo, via their paths relative to the repo root.
 	const packageRoot = resolve(innerRepoRoot, relative(outerRepoRoot, packageDir));
 	if (!existsSync(packageRoot)) {
 		throw new Error(
@@ -293,8 +314,15 @@ async function prepareRevisionBuild(
 				`The revision "${sha}" may predate this package.`,
 		);
 	}
+	const webpackRoot = resolve(innerRepoRoot, relative(outerRepoRoot, webpackDir));
+	if (!existsSync(webpackRoot)) {
+		throw new Error(
+			`Expected webpack directory not found in inner repo at ${webpackRoot}. ` +
+				`The revision "${sha}" may predate it.`,
+		);
+	}
 	installDependencies(innerRepoRoot);
-	return { repoRoot: innerRepoRoot, packageRoot };
+	return { repoRoot: innerRepoRoot, packageRoot, webpackRoot };
 }
 
 // --- Output ---
@@ -368,6 +396,7 @@ function logCollectionComplete(mode: string, label: string, labelDirectory: stri
  */
 export async function collectBundle(options: CollectBundleOptions): Promise<string> {
 	const { mode, revision, mergeBaseOf, forceCleanBuild, packageDir, analysisDir } = options;
+	const webpackDir = options.webpackDir ?? packageDir;
 
 	const outerRepoRoot = findGitRootSync(packageDir);
 	const innerRepoRoot = options.baseRepoDir ?? resolve(analysisDir, "base-repo");
@@ -419,13 +448,15 @@ export async function collectBundle(options: CollectBundleOptions): Promise<stri
 	// Prepare the build environment: the local working tree, or the inner repo at the revision.
 	let repoRoot = outerRepoRoot;
 	let packageRoot = packageDir;
+	let webpackRoot = webpackDir;
 	if (mode === "local") {
 		await captureLocalPatch(outerRepoRoot, labelDirectory);
 	} else {
-		({ repoRoot, packageRoot } = await prepareRevisionBuild(
+		({ repoRoot, packageRoot, webpackRoot } = await prepareRevisionBuild(
 			resolvedRevision as string,
 			outerRepoRoot,
 			packageDir,
+			webpackDir,
 			innerRepoRoot,
 		));
 	}
@@ -434,10 +465,10 @@ export async function collectBundle(options: CollectBundleOptions): Promise<stri
 	if (forceCleanBuild) {
 		cleanWorkspace(repoRoot);
 	}
-	buildPackage(packageRoot);
+	buildPackage(packageRoot, webpackRoot);
 
 	// Save stats, recording the SHA so a later run against the same revision can skip the rebuild.
-	saveStats(label, packageRoot, analysisDir);
+	saveStats(label, webpackRoot, analysisDir);
 	if (resolvedRevision !== undefined) {
 		writeFileSync(resolve(labelDirectory, revisionMarkerFileName), `${resolvedRevision}\n`);
 	}

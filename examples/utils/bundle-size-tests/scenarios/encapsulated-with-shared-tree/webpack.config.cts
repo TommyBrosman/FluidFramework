@@ -22,6 +22,7 @@ import path from "node:path";
 
 import TerserPlugin from "terser-webpack-plugin";
 import { default as webpack } from "webpack";
+import { BundleAnalyzerPlugin } from "webpack-bundle-analyzer";
 
 const bundleName = "encapsulated-with-shared-tree.js";
 
@@ -84,6 +85,13 @@ const config: webpack.Configuration = {
 			/summaryDelayLoadedModule[\\/]index\.js$/,
 			path.resolve(__dirname, "src/polyfills/summaryDelayLoadedModuleStub.ts"),
 		),
+		// Emit the per-asset analyzer.json (statSize/parsedSize/gzipSize) that
+		// 'flub generate bundleAnalysisRepo' collects for the bundle-size comparison. Written under
+		// this directory (__dirname) so it lands in the webpack-dir's bundleAnalyzerJson regardless of cwd.
+		new BundleAnalyzerPlugin({
+			analyzerMode: "json",
+			reportFilename: path.resolve(__dirname, "bundleAnalyzerJson", "analyzer.json"),
+		}),
 	],
 	resolve: {
 		extensionAlias: {
