@@ -642,12 +642,70 @@ to package-level wins:
 - `deltaManager.ts` 14.6 KB
 - `connectionManager.ts` 13.4 KB
 
-The summarizer cluster (`runningSummarizer.ts` 13.1 KB, `summaryGenerator.ts`
-5.8 KB, `summaryManager.ts` 6.3 KB, `summaryDelayLoadedModule/summarizer.ts`
-5.2 KB; ~42 KB total) is **already factored** as `summaryDelayLoadedModule/*`
-for code-splitting — but the scenario uses
-`LimitChunkCountPlugin({ maxChunks: 1 })` so it ends up in the initial
-chunk. A scenario-level change (drop the plugin and accept two chunks)
-would shed ~42 KB from the initial chunk — but that's a **scenario
-tweak**, not a package change, and only meaningful if the consumer can
-actually load a second chunk.
+The summarizer *execution* cluster — `summaryDelayLoadedModule/*`
+(`runningSummarizer.ts` 13.1 KB, `summaryGenerator.ts` 5.8 KB,
+`summarizer.ts` 5.2 KB, `summarizerHeuristics.ts` 2.8 KB,
+`runWhileConnectedCoordinator.ts`, `summaryResultBuilder.ts`; ~28 KB) — is
+factored for code-splitting and, **as of commit `6c875d3ed5`**, splits into
+its own lazily-loaded chunk for multi-chunk consumers. Previously the split
+was **inert**: the dynamic `import()` targeted the `./summary/index.js`
+barrel, which `containerRuntime.ts` also statically imports, so the
+summarizer stayed in the initial chunk (a module reached by both a static
+and a dynamic import cannot be split). Retargeting the import at the leaf
+module fixed it — a **package change**, not a scenario tweak. This scenario
+still counts it in the total because `LimitChunkCountPlugin({ maxChunks: 1 })`
+merges the async chunk back; the win is initial-load (TTI) for real
+multi-chunk consumers, not total bytes. The summary *infrastructure* every
+client loads (`summaryManager.ts` 6.3 KB, election, document-schema, blob
+names) is **not** delay-loaded and stays in the initial chunk regardless.
+See §8 and `CONTAINER_RUNTIME_ANALYSIS.md`.
+
+---
+
+## 8. Webpack boundaries (dynamic `import()` split points)
+
+Inventory of dynamic `import()` split points ("webpack boundaries") in the
+libraries this scenario pulls in, and whether each is actually reachable
+here. Audited by grepping `packages/**/src` for `import(` and confirming
+presence against the built `.js` + source map.
+
+**Reachable in this scenario — exactly one:**
+
+- [containerRuntime.ts](../../../../packages/runtime/container-runtime/src/containerRuntime.ts) →
+  `summary/summaryDelayLoadedModule/index.js` (chunk `summarizerDelayLoadedModule`).
+  The only active boundary. It was **inert** until commit `6c875d3ed5` — the
+  `await import()` targeted the `./summary/index.js` barrel, which
+  `containerRuntime.ts` also statically imports for the summarization
+  infrastructure every client loads (`SummaryManager`, `SummaryCollection`,
+  `SummarizerClientElection`, …). A module reached by both a static and a
+  dynamic import stays in the initial chunk, so the summarizer never split
+  out. Retargeting at the leaf module lets `usedExports` tree-shake the
+  barrel's now-unused value re-exports of `Summarizer`/`RunningSummarizer`/…,
+  severing the static edge so the `import()` is the sole path → a real split.
+
+**Present in a pulled-in package but tree-shaken out (latent):**
+
+- [hashFileBrowser.ts](../../../../packages/common/client-utils/src/hashFileBrowser.ts) →
+  `hashFileNode.js` (chunk `FluidFramework-HashFallback`, the SubtleCrypto
+  fallback for insecure contexts). `client-utils` is in the bundle, but
+  `hashFile` is never called here, so the boundary is tree-shaken (`0×`,
+  absent from the source map). Would activate only for a consumer that hashes
+  files in a non-secure context. Notably written the *correct* way — it
+  `import()`s a dedicated **leaf** module (not a barrel), so it would split
+  cleanly; the shape the summarizer needed.
+
+**In packages this scenario does not pull in (absent here):**
+
+- `drivers/odsp-driver`: `createNewModule`, `summaryModule`
+  (`odspSummaryUploadManager`), `socketModule` (`odspDelayLoadedDeltaStream`).
+  The scenario uses no ODSP driver (only `driver-definitions` *types*).
+
+**npm dependencies:** none of the bundled deps (`@sinclair/typebox`,
+`@tylerbu/sorted-btree-es6`, `lz4js`, `debug`, `ms`, `uuid`, `semver-ts`,
+`tslib`) contain `import()` split points.
+
+**In the emitted single-chunk file: zero, by construction.**
+`LimitChunkCountPlugin({ maxChunks: 1 })` internalizes every boundary, so the
+built bundle carries no async-chunk runtime (`__webpack_require__.e` and
+`installedChunks` are both `0×`). These boundaries affect real multi-chunk
+consumers' *initial-load* size, not this scenario's single-file total.
