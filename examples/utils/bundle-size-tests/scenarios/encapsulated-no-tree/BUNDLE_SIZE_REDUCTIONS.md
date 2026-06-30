@@ -688,3 +688,59 @@ into op processing. See findings §5 and TREE_CHECKOUT_ANALYSIS §7.
 - **`telemetry-utils` core (~17 KB: logger / errorLogging / config).** Core logging
   infrastructure used throughout the runtime. Not observability-only like the op-perf /
   signal telemetry stubs — not removable.
+
+### Reachability audit (this session) — bundle is tight; no orphans
+
+Re-traced the import graph from the scenario's entry value-export set (the non-type
+exports in `src/index.ts`: `ContainerRuntimeFactoryWithDefaultDataStore`, `DataObject`,
+`Loader`, `ConnectionState`, `SharedDirectory`, `SharedString`, `Side`,
+`createOverlappingIntervalsIndex`, `Marker`, `ReferenceType`, `refGetTileLabels`,
+`CompressionAlgorithms`, `SummaryType`/`MessageType`/`ScopeType`, `LoaderHeader`,
+`createChildLogger`). Findings:
+
+- **All bundled packages declare `sideEffects: false`** (sequence, map, merge-tree,
+  container-runtime, container-loader, aqueduct, …), so webpack already tree-shakes pure
+  re-export barrels. Every one of the ~250 modules remaining in the chunk is reachable via
+  a **real** (non-barrel) import edge — there is no statically-unreachable dead code left
+  for webpack to drop.
+- **Our 9 stub-polyfills leave no residual heavy edges.** Audited every `*Stub.ts`: all
+  imports of the heavy real modules they replace are `import type` (erased at compile time).
+  The only *value* import in any stub is `SummaryTreeBuilder` (tiny, already shared). So no
+  stub keeps an orphan alive.
+- **No orphaned modules.** Checked the modules whose only non-barrel importer is a stubbed
+  subsystem (e.g. `summary/summaryHelpers.ts`, whose only static importer besides the barrel
+  is the stubbed `summaryManagerDelayLoadedModule`). They remain only because *live* code
+  (`containerRuntime.ts` uses `DefaultSummaryConfiguration` / `isSummariesDisabled` /
+  `summarizerRequestUrl` / `validateSummaryHeuristicConfiguration` on every client) genuinely
+  uses other exports of the same module. Reachable, not orphaned.
+- **The merge-tree summary WRITE path is reachable via attach, not just summarize.**
+  `SharedObject.getAttachSummary` → `summarizeCore` → `client.snapshot()` →
+  `SnapshotV1`/`SnapshotLegacy`. Any client that *creates/attaches* a SharedString needs it,
+  so it cannot be removed under the generic-factory assumption (see gated candidate below).
+
+**Conclusion:** the clean per-client module-seam levers are exhausted. The remaining ≥5 KB
+blocks are required core orchestration (`containerRuntime`/`channelCollection`/
+`dataStoreContext`/`container`/`deltaManager`/`connectionManager`), required DDSs
+(`merge-tree`/`sequence`/`directory`), load-bearing negotiation (`documentSchema`), or the
+already-tabled gated candidates (SharedMap, serializedStateManager-offline, lz4js).
+
+#### Sub-threshold / gated candidates found by the audit
+
+- **`BatchTracker` (`batchTracker.ts`, ~1.0 KB parsed) — pure telemetry, BELOW the 5 KB bar.**
+  Bound unconditionally (`containerRuntime.ts:2177` `BindBatchTracker`) but only subscribes to
+  `batchBegin`/`batchEnd` and calls `logger.sendPerformanceEvent` — **zero functional effect**,
+  exactly like the already-landed op-perf / signal-telemetry stubs. Removable via a no-op
+  `BindBatchTracker` stub for **~1 KB**. Not landed: below the 5 KB candidate bar and the only
+  standalone pure-telemetry module left (all dedicated telemetry modules —
+  `connectionTelemetry`, `signalTelemetryProcessing`, `gcTelemetry` — are already
+  stubbed/removed; every other telemetry call is inline within a functional module and can't be
+  split out).
+- **Merge-tree summary WRITE path (`snapshotV1.ts` 3,697 + the write half of `snapshotlegacy.ts`
+  ~2,000 + DCE of `summarizeMergeTree`/`client.snapshot`) ≈ 6 KB parsed — GATED on a "load-only
+  client" precondition.** Only reachable through `getAttachSummary`/`summarize`. A mobile client
+  that **only joins existing sessions and never creates/attaches a document** never executes it,
+  so it could be stubbed to throw — but (a) the precondition is strong and unsafe if violated (a
+  single attach would throw mid-create), and (b) the seam is **not clean**: `snapshotLoader.ts`
+  (the READ path, required for load) shares the `SnapshotLegacy.header`/`.body` constants with
+  the writer, so the two cannot be separated by a whole-file replacement without a prod refactor
+  to split read constants from write logic. Documented, not landed.
