@@ -146,6 +146,32 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of op-performance telemetry. `connectionTelemetry.js`'s `ReportOpPerfTelemetry`
+		// wires up `OpPerfTelemetry`, which only emits op round-trip / connection performance telemetry
+		// and has no effect on op processing or runtime state. Replacing the whole module with the no-op
+		// stub shipped by container-runtime drops the `OpPerfTelemetry` implementation from the chunk.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]connectionTelemetry\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/connectionTelemetry\.js$/,
+					"connectionTelemetryStub.js",
+				);
+			},
+		),
+		// TRUE removal of broadcast-signal latency telemetry. `SignalTelemetryManager` only measures
+		// signal round-trip latency; its sole mutation to outbound signals is an optional telemetry
+		// sequence-number stamp that is not used for delivery or ordering. Replacing the module with the
+		// no-op stub drops the telemetry implementation without changing signal behavior.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]signalTelemetryProcessing\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/signalTelemetryProcessing\.js$/,
+					"signalTelemetryProcessingStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`

@@ -42,6 +42,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ id-compressor stub polyfill** (`NormalModuleReplacementPlugin`) | **585,184 B** | **151,269 B** |
 | **+ summarizer stub polyfill** (`NormalModuleReplacementPlugin`) | **546,425 B** | **142,246 B** |
 | **+ summarizer-election stub polyfill** (`NormalModuleReplacementPlugin`) | **530,849 B** | **138,528 B** |
+| **+ op-perf & signal telemetry stub polyfills** (`NormalModuleReplacementPlugin`) | **522,055 B** | **136,776 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -123,6 +124,8 @@ engineering. Ordered by size:
 | `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | ❌ **RESOLVED — app uses `SharedString`.** Required; not removable. | — |
 | `summarizer` subtree (`summaryDelayLoadedModule` 28,215 + terser DCE of now-dead code) | **−38,759 B (implemented)** | ✅ **IMPLEMENTED.** Client-side summarization not needed (mobile summarizes server-side). Removed via the stub polyfill (PR #27611 stub + `NormalModuleReplacementPlugin`). Public-API names (`Summarizer`, …) preserved as throwing stubs. | Build-config opt-in (low) |
 | `summarizer-election` machinery (`SummaryManager` + `OrderedClientElection` + `SummarizerClientElection` + terser DCE) | **−15,576 B (implemented)** | ✅ **IMPLEMENTED.** A client that summarizes server-side never participates in summarizer election, so the election + `SummaryManager` graph is dead weight. Extracted into a `summaryManagerDelayLoadedModule` leaf behind an `await import()`; the app swaps in a **no-op** `setupSummaryManager` stub via `NormalModuleReplacementPlugin`. Unlike the throwing stubs above, this path runs on every normal client, so the stub returns an empty result (== "does not elect"). See section below. | Build-config opt-in (low) |
+| `connectionTelemetry` (`OpPerfTelemetry` op round-trip / connection perf telemetry) | **−5.7 KB (implemented, part of −8,794)** | ✅ **IMPLEMENTED.** Pure observability — no effect on op processing or runtime state. Whole module replaced with a no-op `ReportOpPerfTelemetry` stub via `NormalModuleReplacementPlugin`. Zero behavior/compat risk; only loses op-perf telemetry. See section below. | None (telemetry-only) |
+| `signalTelemetryProcessing` (`SignalTelemetryManager` broadcast-signal latency telemetry) | **−3.15 KB (implemented, part of −8,794)** | ✅ **IMPLEMENTED.** Pure observability — its only outbound mutation is an optional telemetry sequence stamp not used for delivery/ordering. Whole module replaced with a no-op stub. Zero behavior/compat risk; only loses signal-latency telemetry. See section below. | None (telemetry-only) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
@@ -281,6 +284,39 @@ typechecks.
 the real module. The full container-runtime suite (957 tests) passes unchanged — the
 tests exercise the *real* leaf, not the stub. Appropriate only for clients that do
 not summarize client-side.
+
+### Excluding op-perf & signal telemetry (~8.8 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **530,849 → 522,055 B parsed** (−8,794) and
+**138,528 → 136,776 B gzip** (−1,752). Two pure-telemetry modules are replaced
+wholesale with no-op stubs shipped by container-runtime:
+
+- `connectionTelemetry.ts` (`ReportOpPerfTelemetry` → `OpPerfTelemetry`, ~5.7 KB) —
+  subscribes to delta-manager / container-runtime events solely to emit op
+  round-trip and connection-performance telemetry. No effect on op processing,
+  message routing, or runtime state.
+- `signalTelemetryProcessing.ts` (`SignalTelemetryManager`, ~3.15 KB) — measures
+  broadcast-signal round-trip latency. Its *only* mutation to an outbound signal is
+  stamping the **optional** `clientBroadcastSignalSequenceNumber` envelope field,
+  which is read back only to compute latency telemetry — it is **not** used for
+  signal delivery or ordering.
+
+**Why this is the cleanest flavor of removal.** Unlike id-compressor / summarizer
+(feature opt-in) or election (server-side-summary assumption), these carry **zero
+behavior, correctness, or compat risk** — they are observability only. The trade-off
+is simply that op-perf and signal-latency telemetry are no longer emitted. Each
+module is internal (not re-exported from the package `index.ts`) and imported only
+by `containerRuntime.ts`, so a whole-module `NormalModuleReplacementPlugin` swap is
+sufficient — no `await import()` seam is needed. The real `OpPerfTelemetry` /
+`SignalTelemetryManager` implementations never enter the graph; their stubs are
+no-ops (must not throw, since both run unconditionally during/after construction).
+
+**Safety / contract.** Stubs are no-op so all call sites keep working. Compile-time
+specs (`test/connectionTelemetryStub.spec.ts`,
+`test/signalTelemetryProcessingStub.spec.ts`) assert `requireAssignableTo` so the
+stubs' value exports and `SignalTelemetryManager`'s public method signatures stay in
+sync with the real modules. The full container-runtime suite (957 tests) passes
+unchanged.
 
 ### Research: where lz4js is used (~4,672 B)
 
