@@ -130,6 +130,7 @@ engineering. Ordered by size:
 | `blobManager` (`BlobManager` attachment-blob support + snapshot/summary helpers) | **−8,197 B (implemented)** | ✅ **IMPLEMENTED.** App uses only SharedString / SharedDirectory and never creates/references attachment blobs. Whole `blobManager/index.js` replaced with a stub: valid-empty summary tree (omitted by the consumer guard) + empty GC data on the always-run paths, throwing only on actual `createBlob`/`getBlob`. A runtime drift test pins the reproduced path constants. See section below. | Build-config opt-in (low; no-blob assumption) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
+| Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `summary/summarizerNode/summarizerNodeWithGc` 3,697) | **~17,996 B** | ⏸️ **GATED — biggest remaining clean lever; awaiting owner decision.** Seam-able like id-compressor: a single value site `GarbageCollector.create(...)` (~containerRuntime.ts:1932) with ~20 call sites all through the `IGarbageCollector` interface → preload a `createGarbageCollector` leaf in `loadRuntime2`, pass into the ctor, stub returns a no-op `IGarbageCollector`. Summary-interop concern is **moot** (this client summarizes server-side → never writes a summary). **Open precondition:** a no-op GC also disables this client's GC **sweep/tombstone deletion enforcement** (`isNodeDeleted` always false → a swept/tombstoned object could be loaded without the safety throw). Not landed without explicit confirmation that the app does not rely on GC sweep. | Data-integrity enforcement (needs sign-off) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` (`OpDecompressor` inbound + `OpCompressor` outbound) | **~4,672 B** | See research below — `decompress` is genuinely required on the inbound path (any client may receive compressed ops). | Core hot-path |
 | Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
@@ -138,6 +139,15 @@ engineering. Ordered by size:
 > app, so the scenario's API surface is representative and will not be trimmed.
 > `SharedString`/`SharedDirectory` (the two largest blocks, ~168 KB combined) are
 > therefore **required code** — they are not reduction candidates.
+
+> **Note re: `serializedStateManager` (~5.9 KB) + `snapshotRefresher` (~2.1 KB).**
+> Investigated as a stub candidate; **not a clean whole-module removal.** Its
+> `fetchSnapshot` online path (`getSnapshot` local + `getSnapshotTree` /
+> `getDocumentAttributes` from `utils.js`) is essential container-LOAD logic, intertwined
+> in the same module with the offline/pending-state machinery. Only the offline portion
+> (`snapshotRefresher`, pending-state serialization, processed-op accumulation; ~4 KB) is
+> freely removable, and extracting it requires refactoring production code to split the
+> online snapshot-fetch into a shared leaf. Deferred unless a prod refactor is in scope.
 
 ### Excluding id-compressor (~33 KB) from a single chunk — IMPLEMENTED
 
