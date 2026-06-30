@@ -88,20 +88,12 @@ const config: webpack.Configuration = {
 		path: path.resolve(__dirname, "../../build/scenarios/encapsulated-no-tree"),
 	},
 	plugins: [
-		// NOTE: `LimitChunkCountPlugin({ maxChunks: 1 })` was intentionally removed.
-		//
-		// The official Fluid bundle-size metric (`getEntryStatsProcessor` in
-		// build-tools/bundle-size-tools) measures an entrypoint's *initial* chunks
-		// (`stats.entrypoints[name].assets`). Code behind `await import(...)` lands in
-		// a separate async chunk that is NOT part of those initial assets, so it does
-		// not count toward initial download size. The external ship build
-		// (webpack.config.cjs) has no chunk-count limit and therefore splits this code
-		// out. Forcing `maxChunks: 1` here re-merged already-deferred code (e.g. the
-		// summarizer, which container-runtime loads via `await import()`) back into the
-		// one measured chunk, over-counting initial size relative to production.
-		//
-		// Measuring the entry chunk (with code-splitting enabled) reflects real initial
-		// download size, which is the metric this scenario targets.
+		// Force a single chunk. The consuming target is a MOBILE app bundle, not a
+		// web app: there is no benefit to deferring code into separate async chunks,
+		// because every byte must still ship in the single download. Measuring a
+		// single merged chunk reflects the real metric — total shipped bytes — and
+		// ensures only TRUE removals (not code-splitting/deferral) register as wins.
+		new webpack.optimize.LimitChunkCountPlugin({ maxChunks: 1 }),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
