@@ -45,6 +45,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ op-perf & signal telemetry stub polyfills** (`NormalModuleReplacementPlugin`) | **522,055 B** | **136,776 B** |
 | **+ blobManager stub polyfill** (`NormalModuleReplacementPlugin`) | **513,858 B** | **134,712 B** |
 | **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
+| **+ summarizer-node tree stub polyfill** (`NormalModuleReplacementPlugin`) | **483,822 B** | **127,166 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -131,6 +132,7 @@ engineering. Ordered by size:
 | `blobManager` (`BlobManager` attachment-blob support + snapshot/summary helpers) | **−8,197 B (implemented)** | ✅ **IMPLEMENTED.** App uses only SharedString / SharedDirectory and never creates/references attachment blobs. Whole `blobManager/index.js` replaced with a stub: valid-empty summary tree (omitted by the consumer guard) + empty GC data on the always-run paths, throwing only on actual `createBlob`/`getBlob`. A runtime drift test pins the reproduced path constants. See section below. | Build-config opt-in (low; no-blob assumption) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
+| Summarizer-node tracking tree (`summary/summarizerNode/summarizerNode` 5,612 + `summary/summarizerNode/summarizerNodeWithGc` 3,690 + terser DCE) | **−9,150 B (implemented)** | ✅ **IMPLEMENTED.** The node tree tracks per-node summary/GC state so the summarizer client can build incremental summaries. This client summarizes server-side (summarizer stubbed) and runs with GC disabled (`garbageCollection` stubbed), so the tree's reference / used-route / change tracking is dead weight. `createRootSummarizerNodeWithGC` is the single value site (containerRuntime.ts), and `summarizerNode.js` is imported only by `summarizerNodeWithGc.js`, so replacing the latter via `NormalModuleReplacementPlugin` drops both. The stub keeps every-client lifecycle faithful (createChild/getChild/deleteChild maintain a child map; recordChange/invalidate are no-ops; isReferenced ⇒ true since GC is disabled) and throws on summarizer-only/GC methods. Verified-tolerant consumers: `getChild` undefined is guarded (dataStoreContext.ts), `referenceSequenceNumber` has no datastore-infra readers, `invalidate`/`recordChange` affect only summary state. See section below. | Build-config opt-in (consumer summarizes server-side + GC disabled) |
 | Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `gc/gcUnreferencedStateTracker` 1,789 + `gc/gcSummaryStateTracker` 1,680 + `gc/gcConfigs` 1,282 + `gc/gcReferenceGraphAlgorithm` + terser DCE) | **−20,886 B (implemented)** | ✅ **IMPLEMENTED.** This client summarizes server-side (the summarizer is already stubbed) and the consuming app does not rely on GC sweep / tombstone deletion enforcement. The single value site `GarbageCollector.create(...)` (containerRuntime.ts:1932, all ~20 usages via the `IGarbageCollector` interface) is reached only through `gc/garbageCollection.js`; replacing that file with a no-op stub (`shouldRunGC === false`, `isNodeDeleted === false`, valid-empty summary/metadata) drops it plus its **exclusive** deps. `gcHelpers`/`gcDefinitions` (`GCNodeType` enum) stay alive via `summarizerNodeWithGc`/`channelCollection` but are small. See section below. | Build-config opt-in (consumer asserts no reliance on GC sweep) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` compress+decompress + `OpCompressor` + `OpDecompressor` | **~4,412 B (measured)** | ⏸️ **GATED — below threshold + highest interop risk; not landed.** Op compression is **ON by default** (grouped batching ⇒ `minimumBatchSizeInBytes: 614400`, `compressionDefinitions.ts:42`). `lz4js` is a CJS module (compress/decompress cannot be tree-shaken apart); redirecting the `lz4js` request to a throwing stub was measured at only **−4,412 B parsed / −1,719 B gzip** (the 12.7 KiB raw source minifies down hard). `decompress` is required inbound because **any participant** may send a batch > ~600 KB as a compressed op, so removal needs a session-wide guarantee that no client ever compresses (or compression is disabled document-wide). Both **below the 5 KB candidate bar** and the **riskiest** change considered (a violated precondition fails the op stream, not just a local feature). Documented, not landed. | Wire-format interop (session-wide) |
@@ -366,6 +368,48 @@ they equal the real values, and additional tests verify the empty summary/GC sha
 Compile-time `requireAssignableTo` specs keep the value exports and public method
 signatures in sync. The full container-runtime suite (960 tests, +3 new) passes —
 the suite still exercises the *real* BlobManager.
+
+### Excluding the summarizer-node tracking tree (~9.2 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **492,972 → 483,822 B parsed** (−9,150) and
+**129,369 → 127,166 B gzip** (−2,203). `summary/summarizerNode/summarizerNodeWithGc.js`
+is replaced with a no-op stub shipped by container-runtime; because the base
+`summary/summarizerNode/summarizerNode.js` is imported **only** by `summarizerNodeWithGc.js`,
+the replacement drops both modules.
+
+**Why it is removable here.** The summarizer-node tree tracks per-node summary and GC
+state (change sequence numbers, used routes, base-summary handles, referenced state) so a
+summarizer client can build **incremental** summaries. This client summarizes
+**server-side** (the summarizer is already stubbed out) and runs with **GC disabled** (the
+`garbageCollection` stub above ⇒ `createRootSummarizerNodeWithGC` is constructed with
+`gcDisabled: true` at `containerRuntime.ts`), so the tree's reference / used-route / change
+tracking is dead weight — it is never read to produce a summary. The seam is clean:
+`createRootSummarizerNodeWithGC` is the single value site in `containerRuntime.ts`, and all
+usages go through the `IRootSummarizerNodeWithGC` / `ISummarizerNodeWithGC` interfaces.
+
+**Why the stub is mixed no-op / throwing.** Several methods run on **every** client and
+must stay faithful, so the stub keeps a real child `Map`: `createChild` (idempotent per
+id) → `getChild` → `deleteChild` maintain it; `recordChange` / `invalidate` /
+`updateBaseSummaryState` / `updateUsedRoutes` are no-ops (they only mutate summary state);
+`isReferenced()` returns `true` (with GC disabled nothing is ever unreferenced);
+`isSummaryInProgress()` returns `false`. The **summarizer-only / GC** methods (`summarize`,
+`getGCData`, `startSummary`, `validateSummary`, `completeSummary`, `refreshLatestSummary`)
+throw, because they only run on a summarizing client, which this is not.
+
+**Verified-tolerant consumers.** `getChild(...)` returning `undefined` is guarded at the
+call site (`dataStoreContext.ts` `if (channelSummarizerNode)`); `referenceSequenceNumber`
+has no readers in `channelCollection` / `dataStoreContext` / `dataStore`; `invalidate` and
+`recordChange` only affect summary state, which is never serialized on this client.
+
+**Safety / contract.** Appropriate for clients that summarize server-side **and** run with
+GC disabled (both already true via the summarizer + GC stubs). The swap is a **consumer
+build-config opt-in**, exactly like the other stubs. A compile-time `requireAssignableTo`
+spec keeps the value exports (`createRootSummarizerNodeWithGC`, `SummarizerNodeWithGC`) and
+the factory signature in sync with the real module, and runtime tests assert the child-map
+behavior, the no-op lifecycle methods, and that the summarizer-only methods throw. The
+regex `/[\\/]summarizerNodeWithGc\.js$/` does not match the replacement module itself
+(`summarizerNodeWithGcStub.js`). The full container-runtime suite (965 tests, +3 new)
+passes — the suite still exercises the *real* summarizer-node tree.
 
 ### Excluding garbage collection (~20.9 KB) from a single chunk — IMPLEMENTED
 

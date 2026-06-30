@@ -200,6 +200,24 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of the summarizer-node tracking tree (`summarizerNode.js` + `summarizerNodeWithGc.js`).
+		// These track per-node summary/GC state so the summarizer client can produce incremental summaries.
+		// This client summarizes server-side (the summarizer is already stubbed) and runs with GC disabled
+		// (garbageCollection is stubbed above), so the node tree's reference / used-route / change tracking is
+		// dead weight. Replacing `summarizerNodeWithGc.js` with the no-op stub shipped by container-runtime
+		// drops it and the base `summarizerNode.js` it depends on. The stub keeps the every-client lifecycle
+		// faithful (createChild/getChild/deleteChild maintain a child map; recordChange/invalidate are no-ops;
+		// isReferenced returns true) and throws on summarizer-only/GC methods. The "Stub" infix keeps this
+		// regex from matching the replacement module itself.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]summarizerNodeWithGc\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/summarizerNodeWithGc\.js$/,
+					"summarizerNodeWithGcStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
