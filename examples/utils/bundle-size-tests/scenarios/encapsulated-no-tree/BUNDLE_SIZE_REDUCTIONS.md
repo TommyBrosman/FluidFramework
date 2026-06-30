@@ -148,9 +148,22 @@ engineering. Ordered by size:
 > `fetchSnapshot` online path (`getSnapshot` local + `getSnapshotTree` /
 > `getDocumentAttributes` from `utils.js`) is essential container-LOAD logic, intertwined
 > in the same module with the offline/pending-state machinery. Only the offline portion
-> (`snapshotRefresher`, pending-state serialization, processed-op accumulation; ~4 KB) is
+> (`snapshotRefresher`, pending-state serialization, processed-op accumulation) is
 > freely removable, and extracting it requires refactoring production code to split the
-> online snapshot-fetch into a shared leaf. Deferred unless a prod refactor is in scope.
+> online snapshot-fetch into a shared leaf.
+>
+> **MEASURED upper bound (prototype, reverted):** gutting *all* offline machinery —
+> stubbing `snapshotRefresher.ts` to a no-op and throwing from `getPendingLocalState` /
+> `getLatestSnapshotInfo` / the snapshot-blob conversions — yields only
+> **483,822 → 479,563 B parsed (−4,259) / 127,166 → 126,112 B gzip (−1,054).** That is
+> the absolute ceiling and it is **below the 5 KB candidate bar**, while a real version
+> would need a genuine prod refactor (extract the offline machinery into a separately
+> stubbable module, thread an interface through `SerializedStateManager`, and special-case
+> the `pendingLocalState` rehydrate branch of `fetchSnapshot`). The risk/byte ratio is
+> poor — **deferred** unless a prod refactor is independently justified. `offlineLoadEnabled`
+> also defaults to **true** for interactive clients (`container.ts:964`,
+> `options.enableOfflineLoad !== false`), so nothing here tree-shakes without that refactor
+> plus a consumer opt-out.
 
 ### Excluding id-compressor (~33 KB) from a single chunk — IMPLEMENTED
 
@@ -541,7 +554,7 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 
 | Reduction | Approx. impact (parsed) | LOE | Status / notes |
 |---|---:|---|---|
-| **`SharedMap` back-compat in `aqueduct` `DataObjectFactory`** — `dataObjectFactory.ts:84` unconditionally does `sharedObjects.push(SharedMap.getFactory())` (guarded only by `factory.type === MapFactory.Type`), statically pulling `map.js` + `mapKernel.js`. | **9,506 B** (1,901 `map.js` + 7,305 `mapKernel.js` + 300 transitive) — paid by **every `DataObject` consumer**, not just this scenario | **Medium / blocked-compat** | **Verified via `analyzeReasons --root dds/map/lib/map.js`: 9,506 B unique subtree, reachable *only* through this registration.** The package's own `// TODO: Remove SharedMap factory when compatibility with SharedMap DataObject is no longer needed in 0.10` flags it. Load-bearing: removing it breaks loading documents whose root DataObject persisted a `SharedMap` channel. Needs an owner/compat decision (are pre-0.10 SharedMap-DataObject documents still in scope?), so it is **not** a safe surgical bundle-only change. **⚠️ OPEN QUESTION — left unresolved per user; the app owner is unsure whether pre-0.10 SharedMap-DataObject documents are still in scope.** Lazy-loading the factory yields **0 B** here (single-chunk merge); only outright deletion removes the bytes. |
+| **`SharedMap` back-compat in `aqueduct`** — **two** references statically pull `mapFactory.js` → `map.js` → `mapKernel.js`: (1) `dataObjectFactory.ts:84` `sharedObjects.push(SharedMap.getFactory())` (the legacy-channel registration); (2) `dataObject.ts:59` `this.internalRoot.attributes.type === MapFactory.Type` (legacy-masquerade detection). `MapFactory` is hard-coupled to the `SharedMap` impl (its `create`/`loadCore` do `new SharedMapInternal(...)`), so even a bare `MapFactory.Type` reference drags the whole subtree in. | **−9,471 B parsed / −1,432 B gzip (MEASURED)** — paid by **every `DataObject` consumer**, not just this scenario | **Medium / blocked-compat** | **⚠️ OPEN QUESTION — owner decision pending.** Hard number obtained by prototype (both refs decoupled, then reverted): single chunk **483,822 → 474,351 B parsed (−9,471) / 127,166 → 125,734 B gzip (−1,432)**; `map.ts`/`mapKernel.ts`/`mapFactory.ts` leave the bundle entirely. **Removing BOTH refs is required** — decoupling only `dataObject.ts` (inlining the `"https://graph.microsoft.com/types/map"` type string, which is **free + safe** and keeps masquerade detection) yields **0 B** while the factory registration still references `MapFactory`. The **factory registration is the load-bearing one**: dropping it breaks loading documents whose root `DataObject` persisted a `SharedMap` channel (no factory to rehydrate it). The package's own `// TODO: Remove SharedMap factory ... no longer needed in 0.10` flags it. Needs an owner/compat decision (are pre-0.10 SharedMap-DataObject documents still in scope?). Lazy-loading yields **0 B** here (single-chunk merge); only outright deletion removes the bytes. |
 | **Read-only checkout entrypoint** — split `TreeCheckout` so a variant omits `defaultEditBuilder`, dropping the entire write pillar (`sequence-field` + `modularChangeFamily` + `optional-field`). | up to **~70 KB** (read-only consumers only; **0** for read+write) | **Very high** | Surfaced by per-API analysis, **not yet attempted**. Architectural: `TreeCheckout` must expose `editor`/`transaction`/`applyChange` only on the editing variant. Single clean cut point (one import edge). |
 | **`SchemaFactory.array`/`.map` prototype detach (#6)** — make array/map node-kind infra opt-in. | **−11,044** ceiling / −2,830 gzip; **0** if the consumer uses any of `array`/`map`/`arrayRecursive`/`mapRecursive` | **Medium** | Stub-measured. This scenario uses both array and map, so saving here is 0 — documented as the upper bound for asymmetric consumers. |
 | **Closed-kind-set `ModularChangeFamily` monomorphization** — replace runtime `getFieldKind` map dispatch with a build-time closed set so terser can resolve handlers statically. | **~10 KB** ceiling | **Very high** | Research-grade. Correctness, layer-compat, and persisted-format implications. |
