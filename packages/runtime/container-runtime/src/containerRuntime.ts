@@ -102,12 +102,6 @@ import type {
 	SerializedIdCompressorWithOngoingSession,
 } from "@fluidframework/id-compressor/internal";
 import {
-	createIdCompressor,
-	createSessionId,
-	deserializeIdCompressor,
-	toIdCompressorWithCore,
-} from "@fluidframework/id-compressor/internal";
-import {
 	FlushMode,
 	channelsTreeName,
 	gcTreeKey,
@@ -1179,7 +1173,30 @@ export class ContainerRuntime
 			idCompressorMode = desiredIdCompressorMode;
 		}
 
+		// Delay-load the id-compressor implementation only when it is enabled. ContainerRuntime reaches
+		// the implementation exclusively through this dynamic import (every other reference to
+		// `@fluidframework/id-compressor` here is type-only), which keeps the id-compressor subgraph out
+		// of the module graph for the common case where it is off (the default). That isolation also lets
+		// an application replace `./idCompressorDelayLoadedModule/index.js` with a stub via
+		// NormalModuleReplacementPlugin to drop the code entirely from single-file bundles.
+		// The import is awaited here in the async load path, before any synchronous code path that
+		// constructs the compressor runs, so it remains available synchronously inside createIdCompressorFn.
+		const idCompressorBundle =
+			idCompressorMode === undefined
+				? undefined
+				: await import("./idCompressorDelayLoadedModule/index.js");
+
 		const createIdCompressorFn = (): IIdCompressor & IIdCompressorCore => {
+			assert(
+				idCompressorBundle !== undefined,
+				"id-compressor module must be loaded when id-compressor is enabled",
+			);
+			const {
+				createIdCompressor,
+				createSessionId,
+				deserializeIdCompressor,
+				toIdCompressorWithCore,
+			} = idCompressorBundle;
 			/**
 			 * Because the IdCompressor emits so much telemetry, this function is used to sample
 			 * approximately 5% of all clients. Only the given percentage of sessions will emit telemetry.

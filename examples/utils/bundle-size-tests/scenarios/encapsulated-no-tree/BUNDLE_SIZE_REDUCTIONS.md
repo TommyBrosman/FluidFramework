@@ -38,6 +38,16 @@ for these Terser-minified bundles) for the single chunk
 | Milestone | Parsed | Gzip |
 |---|---:|---:|
 | **No-tree single chunk, all dep-swaps applied** (`135357c859`) | **617,974 B** | **160,775 B** |
+| + id-compressor delay-load seam (no stub swap) | 618,397 B | 160,833 B |
+| **+ id-compressor stub polyfill** (`NormalModuleReplacementPlugin`) | **585,184 B** | **151,269 B** |
+
+> **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
+> gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
+> delay-load seam *alone* (618,397 B) is essentially the same size as the baseline
+> — proving deferral by itself saves nothing here; the saving comes entirely from
+> replacing the real module with the throwing stub at build time so the
+> id-compressor subgraph (incl. `@tylerbu/sorted-btree-es6`) never ships. See the
+> id-compressor section below.
 
 > An earlier exploration lazy-loaded id-compressor (`6bde337df1`) to shrink the
 > *entry* chunk, but that metric is irrelevant for a single-chunk mobile bundle:
@@ -63,17 +73,22 @@ app uses a narrower API slice plus 2.80→2.101 drift).
 
 ### Honest ceiling (non-tree, true removals only)
 
-Under the single-chunk / true-removals-only rule, the only landed wins are the
+Under the single-chunk / true-removals-only rule, the landed wins are the
 **dep-swaps (≈ −18 KB)** — npm polyfills genuinely replaced by smaller in-tree
-code. Code-splitting / lazy-loading (id-compressor, summarizer) is **disqualified**:
-it defers bytes that still ship in the single chunk.
+code — plus the **id-compressor stub polyfill (≈ −33 KB)**, a true exclusion (not
+deferral) of the off-by-default id-compressor subtree (see below). Pure
+code-splitting / lazy-loading is still **disqualified**: it defers bytes that
+still ship in the single chunk. The id-compressor win is *not* deferral — the real
+module is replaced by a throwing stub at build time, so its bytes never ship.
 
-The remaining 617,974 B is dominated by code that is **genuinely reachable** from
+The remaining ~585 KB is dominated by code that is **genuinely reachable** from
 the scenario's API surface and cannot be deferred away:
 `merge-tree` (92,732) + `sequence` (40,005) pulled by `SharedString`,
 `container-runtime` core (~150 KB), `container-loader` (~103 KB), `map` (~36 KB).
 
 A true removal toward the target therefore requires one of:
+- **Build-time exclusion of an off-by-default subsystem** behind a replaceable
+  dynamic-import seam (the id-compressor stub-polyfill pattern, now landed);
 - **Dead-code elimination** terser can't do automatically (back-compat shims
   behind effectively-constant conditions, e.g. the `SharedMap` aqueduct
   registration ≈ 9.5 KB);
@@ -85,13 +100,13 @@ A true removal toward the target therefore requires one of:
 Reaching −266,260 B on non-tree FF core via true removals alone is **infeasible**.
 The app **confirms it uses `SharedString` and `SharedDirectory`** (and every other
 `index.ts` export), so the two largest non-tree blocks — `merge-tree`+`sequence`
-(≈133 KB) and `map` (≈36 KB) — are **required code** and off the table. The only
-remaining true-removal candidates are the id-compressor subtree (≈33.6 KB, gated on
-a build-time opt-out decision), the `SharedMap` aqueduct back-compat registration
-(≈9.5 KB, **open compat question**), and `lz4js` (≈4.7 KB, required on the inbound
-op path). Even all three together (~48 KB) plus the landed dep-swaps (~18 KB) reach
-only ~66 KB — about a quarter of the 266 KB target. **The target is not reachable
-on non-tree FF code while preserving the app's required API surface.** See the
+(≈133 KB) and `map` (≈36 KB) — are **required code** and off the table. With the
+id-compressor stub polyfill landed (≈33 KB) plus the dep-swaps (≈18 KB), the
+remaining true-removal candidates are the `SharedMap` aqueduct back-compat
+registration (≈9.5 KB, **open compat question**) and `lz4js` (≈4.7 KB, required on
+the inbound op path). Even all landed + candidate removals together reach only
+~66 KB — about a quarter of the 266 KB target. **The target is not reachable on
+non-tree FF code while preserving the app's required API surface.** See the
 true-removal ledger and research notes below.
 
 ### True-removal ledger (single chunk, non-tree) — needs decisions
@@ -103,7 +118,7 @@ engineering. Ordered by size:
 |---|---:|---|---|
 | `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | ❌ **RESOLVED — app uses `SharedString`.** Required; not removable. | — |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
-| `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **~33,634 B (measured)** | ⚠️ **MAYBE.** Off by default. Cannot be removed by the summarizer pattern in a single chunk (see research below); needs a build-time opt-out (DefinePlugin DCE) or dependency-injection. Changes the enable contract. | Core build-flag (medium) |
+| `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` (`OpDecompressor` inbound + `OpCompressor` outbound) | **~4,672 B** | See research below — `decompress` is genuinely required on the inbound path (any client may receive compressed ops). | Core hot-path |
 | Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
@@ -113,66 +128,68 @@ engineering. Ordered by size:
 > `SharedString`/`SharedDirectory` (the two largest blocks, ~168 KB combined) are
 > therefore **required code** — they are not reduction candidates.
 
-### Research: excluding id-compressor (~33,634 B) from a single chunk
+### Excluding id-compressor (~33 KB) from a single chunk — IMPLEMENTED
 
-**Empirically measured.** Stubbing out the four id-compressor value functions in
-`containerRuntime.ts` (the only live references — see below) drops the single
-chunk from **617,974 → 584,340 B parsed** (−33,634) and **160,775 → 150,934 B
-gzip** (−9,841). The removed bytes are the id-compressor module (17,954) + its
-sole non-tree dependency `@tylerbu/sorted-btree-es6` (15,542) + a few hundred
-bytes of telemetry-utils helpers (`createSampledLogger`/`toITelemetryLoggerExt`)
-used only by the compressor closure.
+**Result.** Implemented via the summarizer-style **stub polyfill** (delay-loaded
+leaf module + build-time module replacement). With the replacement active the
+single chunk drops from **618,397 → 585,184 B parsed** (−33,213) and
+**160,833 → 151,269 B gzip** (−9,564). (Without the replacement, the delay-load
+seam alone measures 618,397 B — i.e. essentially unchanged from the 617,974 B
+baseline; this confirms that the dynamic-import seam by itself saves nothing in a
+single chunk, and that the saving comes entirely from the stub swap, a TRUE
+removal.) The removed bytes are the id-compressor module (17,954) + its sole
+non-tree dependency `@tylerbu/sorted-btree-es6` (15,542) + a few hundred bytes of
+telemetry-utils helpers used only by the compressor closure. Verified the merged
+bundle no longer contains any `sorted-btree`/`tylerbu` code and instead carries the
+stub's fail-fast marker.
 
 **Why it is in the bundle at all.** Every importer of `@fluidframework/id-compressor`
 in the in-bundle packages is `import type` (erased) **except**
-`containerRuntime.ts`, which value-imports `createIdCompressor` / `createSessionId`
+`containerRuntime.ts`, which value-imported `createIdCompressor` / `createSessionId`
 / `deserializeIdCompressor` / `toIdCompressorWithCore`. Those are referenced inside
 `createIdCompressorFn`, which is **always constructed and passed to the
 `ContainerRuntime` constructor** (even when id-compressor is disabled). That live
-reference is what pins the subtree. The id-compressor package is already
-`sideEffects: false`, so the moment the reference is gone it tree-shakes out
-cleanly — which is exactly what the stub experiment confirmed.
+reference is what pinned the subtree. The id-compressor package is already
+`sideEffects: false`, so once the reference moves behind a replaceable seam the
+subtree tree-shakes out cleanly.
 
-**Why the summarizer pattern does NOT work here (for a single chunk).** The
-summarizer is dynamically `import()`-ed from a segregated module
-(`summary/summaryDelayLoadedModule/index.js`) so a bundler can split it into its
-own lazily-loaded chunk. That removes it from the **initial** chunk only — in a
-**single-chunk** build, `LimitChunkCountPlugin({ maxChunks: 1 })` merges the split
-chunk straight back in. Verified directly: the `Summarizer` class **is present in
-the single-chunk bundle**. The earlier id-compressor lazy-load (`6bde337df1`,
-reverted) had the same fate and even added ~3.4 KB of chunk-wrapper overhead.
-**Deferral cannot remove bytes from a single chunk; only a true exclusion can.**
+**How the stub polyfill works (the real summarizer pattern).** This is *not*
+deferral. It is the same mechanism FF already uses to drop the summarizer
+implementation from single-chunk mobile bundles:
 
-**What a true single-chunk exclusion requires.** The consumer must commit *at
-build time* that it will never enable id-compressor, so the static reference can be
-eliminated and the module tree-shaken. Two viable mechanisms:
+1. **A delay-loaded leaf module.** `containerRuntime.ts` now reaches the four
+   id-compressor functions exclusively through a dynamic
+   `await import("./idCompressorDelayLoadedModule/index.js")`, taken only on the
+   enabled path inside the async `loadRuntime2`. Every other reference to
+   id-compressor in container-runtime is type-only. The import is awaited before any
+   synchronous code constructs the compressor, preserving the documented
+   *synchronous-initialization* requirement (`createIdCompressorFn` reads the
+   already-resolved module). The leaf module — not a barrel — is imported directly,
+   so the subgraph does not get folded back into the initial chunk under
+   `providedExports: false`.
 
-1. **Build-time constant + guarded factory (DefinePlugin DCE).** Gate the
-   `createIdCompressorFn` body (and thus the four imports) behind a build-time
-   boolean, e.g. `declare const FLUID_NO_ID_COMPRESSOR: boolean;` …
-   `const createIdCompressorFn = FLUID_NO_ID_COMPRESSOR ? undefined : () => { … }`.
-   With the consumer's bundler defining `FLUID_NO_ID_COMPRESSOR = true`, terser
-   evaluates the ternary, DCEs the closure (the only references), webpack drops the
-   now-unreferenced static import, and the `sideEffects:false` module is
-   tree-shaken — yielding the measured −33,634 B. At runtime, attempting to enable
-   id-compressor with the flag set must `throw` (fail fast). This is the *least
-   invasive* option: one build flag, one guarded factory, one throw. It mirrors how
-   `process.env.NODE_ENV === "production"` DCE already strips dev-only code in this
-   very bundle. **Cost:** introduces and documents a public build-time switch;
-   default (flag unset) keeps current behavior, so it is non-breaking.
+2. **A throwing stub** (`idCompressorDelayLoadedModuleStub.ts`) re-exports the same
+   four value symbols; each throws `… is unavailable: the
+   idCompressorDelayLoadedModule chunk was stubbed out of the bundle.` if ever
+   called. A compile-time spec
+   (`test/idCompressorDelayLoadedModuleStub.spec.ts`) asserts
+   `requireAssignableTo<keyof typeof real, keyof typeof stub>` **both directions**,
+   so the stub's value exports stay exactly in sync with the real module.
 
-2. **Dependency injection (inversion).** Remove the id-compressor factory from core
-   entirely; the consumer passes a factory (or the four functions) via
-   `runtimeOptions`/the load call. Core then has *zero* static reference, so
-   id-compressor is bundled only by apps that actually wire it in. Architecturally
-   cleanest and needs no bundler cooperation, but it is a larger public-API change
-   (new option, migration for existing enable-via-`enableRuntimeIdCompressor`
-   consumers) and warrants FF API-council review.
+3. **Build-time replacement.** The consuming bundle uses
+   `NormalModuleReplacementPlugin(/idCompressorDelayLoadedModule[\\/]index\.js$/, …)`
+   to swap the leaf module for the stub. The real id-compressor subgraph never
+   enters the module graph, so it is a TRUE removal that survives
+   `LimitChunkCountPlugin({ maxChunks: 1 })` — unlike pure deferral, which the
+   single-chunk merge pulls right back in.
 
-**Recommendation:** Option 1 is the pragmatic path for the mobile target — small,
-local, non-breaking by default, and validated to deliver the full ~33.6 KB. It
-should be raised with the container-runtime owners since it adds a supported
-build-time contract. (Not implemented here pending that decision.)
+**Safety / contract.** id-compressor is off by default
+(`enableRuntimeIdCompressor`), and a consumer applies the replacement only when it
+commits to never enabling it; if it does enable it, the stub throws immediately
+(fail fast) rather than corrupting state. The "type-only everywhere outside the
+`await import()`" invariant is what keeps the swap runtime-safe and should be guarded
+by dependency tests in the consuming/host package (mirroring FF's summarizer
+dependency tests).
 
 ### Research: where lz4js is used (~4,672 B)
 
@@ -290,11 +307,17 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 
 The following candidates above are **deferral, not removal**, and therefore yield
 **0 B** for a single-chunk mobile bundle: `schemaCompatibilityTester` defer,
-`lz4js` lazy-load, `chunked-forest/codec` separation (if implemented via dynamic
-import), and the reverted id-compressor lazy-load. They are retained only for the
-web/multi-chunk case. **The leading non-tree TRUE-removal candidate is the
-`SharedMap` aqueduct back-compat registration (≈9.5 KB)** — deleting it (not
-lazy-loading it) genuinely removes bytes, pending the compat decision noted above.
+`lz4js` lazy-load, and `chunked-forest/codec` separation (if implemented via dynamic
+import). They are retained only for the web/multi-chunk case.
+
+The **summarizer** and the **id-compressor** are *not* in this list: both are removed
+for real via the **stub-polyfill** pattern (a delay-loaded leaf module whose
+implementation is replaced by a throwing stub at build time via
+`NormalModuleReplacementPlugin`). That is a TRUE removal that survives the
+single-chunk merge — the real subgraph never enters the bundle. The id-compressor
+stub polyfill is implemented in this scenario (≈ −33 KB, see above); the earlier
+id-compressor *lazy-load* (`6bde337df1`, reverted) was deferral and is the failed
+approach this replaces.
 
 ### Hard pass (documented, not worth pursuing)
 
@@ -307,23 +330,20 @@ are all either tree-owned or genuinely-used core:
 - `@tylerbu/sorted-btree-es6` `b+tree.js` (15.5 KB) — **pulled by `id-compressor`**
   (`sessions.ts` instantiates `BTree` directly), NOT by tree (tree is removed from
   this bundle). `BTree` is a single monolithic class, so nothing tree-shakes once it
-  is instantiated. It therefore rides along with the id-compressor subtree and can
-  only be removed wholesale, together with id-compressor, when id-compressor is
-  unused. **This makes the id-compressor subtree ≈33 KB** (17,954 id-compressor +
-  15,542 sorted-btree), the single largest non-tree block that is *functionally*
-  optional (id-compressor is off by default) — but a TRUE removal requires a
-  build-time opt-out (DefinePlugin-gated DCE) so terser can drop the import, since a
-  static import keeps it in the single chunk.
+  is instantiated. It therefore rides along with the id-compressor subtree and is
+  removed *wholesale, together with id-compressor*, via the id-compressor stub
+  polyfill (implemented; see above). **This makes the id-compressor subtree ≈33 KB**
+  (17,954 id-compressor + 15,542 sorted-btree), the single largest non-tree block
+  that is *functionally* optional (id-compressor is off by default).
 - `lz4js` (~4.7 KB, under the 5 KB bar) — `OpCompressor`/`OpDecompressor`
   are eagerly constructed on the op hot path.
 - `tslib` (1.9 KB) — intentionally shared via `importHelpers`.
 - `semver-ts` (0.8 KB) — pinned by `dds/tree`.
-- `id-compressor` (~18 KB) — statically imported, only constructed when enabled
-  (off by default). **Lazy-loading does NOT count** under the single-chunk mobile
-  metric: the deferred bytes still ship, and the split overhead made the total
-  *larger*. The reverted experiment is `6bde337df1` / `135357c859`. A TRUE removal
-  would require excluding it from the bundle entirely when unused (a build-time /
-  API decision the consumer makes), which is out of scope for an FF-core change.
+- `id-compressor` (~18 KB) — formerly statically imported; now reached only through a
+  replaceable delay-load seam and **excluded via the stub polyfill** when unused
+  (off by default). The earlier *lazy-load* experiment (`6bde337df1`, reverted) did
+  NOT count under the single-chunk metric because deferred bytes still ship; the
+  stub-polyfill replacement is the TRUE removal that supersedes it.
 
 Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 `container.ts` 29.8 KB, `channelCollection.ts`, `dataStoreContext.ts`,

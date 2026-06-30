@@ -94,6 +94,24 @@ const config: webpack.Configuration = {
 		// single merged chunk reflects the real metric — total shipped bytes — and
 		// ensures only TRUE removals (not code-splitting/deferral) register as wins.
 		new webpack.optimize.LimitChunkCountPlugin({ maxChunks: 1 }),
+		// TRUE removal of the id-compressor implementation. The id-compressor is off
+		// by default (runtimeOptions.enableRuntimeIdCompressor) and this scenario never
+		// enables it, so its implementation — plus its transitive
+		// `@tylerbu/sorted-btree-es6` dependency — is dead weight. ContainerRuntime
+		// reaches the id-compressor exclusively through a dynamic import of
+		// `./idCompressorDelayLoadedModule/index.js`; every other reference is
+		// type-only. Replacing that leaf module with the throwing stub shipped by
+		// container-runtime drops the entire subgraph from the bundle. Unlike code
+		// splitting, this is a real removal that holds under the single-chunk metric.
+		new webpack.NormalModuleReplacementPlugin(
+			/idCompressorDelayLoadedModule[\\/]index\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/idCompressorDelayLoadedModule[\\/]index\.js$/,
+					"idCompressorDelayLoadedModuleStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
