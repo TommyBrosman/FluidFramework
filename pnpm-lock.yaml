@@ -12720,9 +12720,6 @@ importers:
       '@fluidframework/telemetry-utils':
         specifier: workspace:~
         version: link:../../utils/telemetry-utils
-      debug:
-        specifier: ^4.3.4
-        version: 4.4.3(supports-color@8.1.1)
       tslib:
         specifier: ^2.8.1
         version: 2.8.1
@@ -12760,9 +12757,6 @@ importers:
       '@microsoft/api-extractor':
         specifier: 7.58.1
         version: 7.58.1(patch_hash=949a26f6cec9ac4e37522f178b8e4982136ccfeb8c6d0835130ef2aa6788f4fa)(@types/node@22.19.17)
-      '@types/debug':
-        specifier: ^4.1.5
-        version: 4.1.12
       '@types/mocha':
         specifier: ^10.0.10
         version: 10.0.10

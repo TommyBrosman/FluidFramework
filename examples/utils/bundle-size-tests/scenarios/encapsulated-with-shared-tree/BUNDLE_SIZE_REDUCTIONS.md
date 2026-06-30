@@ -18,12 +18,13 @@ Both sections are ordered **descending by reduction size**.
 | Milestone | Parsed | Gzip |
 |---|---:|---:|
 | Pre-session baseline | 1,019,378 B | ~270,000 B |
-| After all landed work (latest: `1517e1b2b7`) | **961,194 B** | **255,501 B** |
-| **Total landed** | **−58,184 B (−5.71%)** | **~−14,500 B (−5.4%)** |
+| After all landed work (latest: `debug`→`minimalDebug`) | **955,980 B** | **253,452 B** |
+| **Total landed** | **−63,398 B (−6.22%)** | **~−16,500 B (−6.1%)** |
 
 > Note: the findings doc's "current" figure (968,720 B) predates the
-> shape-aware-chunker commit `1517e1b2b7` (−7,526 B), which is the most
-> recent landed reduction.
+> shape-aware-chunker commit `1517e1b2b7` (−7,526 B) and the
+> `debug`→`minimalDebug` replacement (−5,010 B), the two most recent
+> landed reductions.
 
 ---
 
@@ -43,6 +44,7 @@ time each change landed, against this scenario's bundle.
 | 6 | `be4b57addd` | **`importHelpers` + `tslib` — 4 more packages** (container-runtime, container-loader, sequence, shared-object-base; 6 files total). Broken down per package below. | **−3,314** | −853 |
 | 7 | `004d76ec6c` | **Replace `double-ended-queue` (npm)** with in-tree `Deque<T>` (~80 lines, array-backed w/ head index, amortized O(1) shift). | **−2,157** | −621 |
 | 8 | `ec4c2cd96f` | **Replace `base64-js` (npm)** with `btoa`/`atob` inline helpers in `bufferBrowser.ts` (chunked via `String.fromCharCode.apply` to dodge call-stack limit). | **−1,090** | −498 |
+| 9 | _(pending)_ | **Replace `debug` (npm)** with in-tree `minimalDebug.ts` (~190 lines) in `container-loader`, used solely by `DebugLogger`. Replicates `debug` v4.4 browser semantics (`localStorage.debug`/`DEBUG` + `process.env.DEBUG`, glob namespace matching, `-` skips, `.enabled` get/set, `.extend`, static `.log`). Drops `debug` (4,669 B) + transitive `ms` (1,402 B); preserves the `localStorage.debug = "fluid:*"` partner diagnostic. | **−5,010** | −1,925 |
 
 > Sub-1 KB treeCheckout cleanups (`0160d61ddb`, `bf19974e42`, `9bd42724a2`,
 > `4f3f00e408`; −631 B combined) are omitted from this table — see findings §3.
@@ -92,7 +94,6 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 | **Further `basicChunk`-path specialization** beyond `1517e1b2b7** — drive remaining dynamically-dead chunk-policy branches to static DCE. | ~1–2 KB residual | **Medium** | `1517e1b2b7` already captured the `uniformChunk` (5.9 KB) win; remaining surface is small. |
 | **Top-level checkout-API split (#9)** — move transactions/branching/alpha methods to a new `@fluidframework/tree/legacy/branching`-style entrypoint. | **−4,702** / −1,172 gzip | **High** | Stub-measured. New public-API entrypoint + refactor 18+ methods to module-level functions + consumer codemod/shims. |
 | **`schemaCompatibilityTester` defer** — skip the open-time stored-schema compat check until first edit/explicit check. | **~4,544 B** | **Medium** | Reached unconditionally during view init; candidate for lazy init for consumers willing to defer the open-time check. |
-| **`debug` (npm) off the default Loader path (N6)** — `DebugLogger` entrypoint split. | **~4,700 B** (`debug` 2,632 + `ms` 1,402 + remainder) | **Medium** | `localStorage.debug = "fluid:*"` is a documented partner diagnostic; needs a public-API entry-point split. |
 | **`lz4js` lazy-load** — defer `OpCompressor`/`OpDecompressor`. | **~4,700 B** | **High / blocked** | Both are eagerly instantiated in `containerRuntime.ts` on the op-processing hot path; lazy-loading injects async boundaries into inbound decompression. |
 | **`chunked-forest/codec` separation** — split the op-wire codec path (reached SharedTree-direct via `forestSummarizer`) from in-memory chunk representation. | **~7 KB** (of the ~14 KB codec subtree) | **Medium-High** | Distinct logical responsibility (wire format vs. in-memory) in the same directory; flagged as "potentially separable," not yet attempted. |
 | **`@tylerbu/sorted-btree-es6` `union`/`decompose` replacement** | **~7 KB** | **High / blocked** | `mergeTupleBTrees` is hot-path compose code; naive merge trades bundle size for runtime perf. |

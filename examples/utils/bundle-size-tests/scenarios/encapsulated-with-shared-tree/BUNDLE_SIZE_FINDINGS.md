@@ -175,9 +175,10 @@ landed first; the 10 commits after it followed once the
 | 9 | `dde412e121` | dds/map: replace `path-browserify` with ~35 lines of inline posix path helpers in `directory.ts` (full `..`/`.`/multi-slash semantics). | **−3,590** | −1,332 |
 | 10 | `004d76ec6c` | client-utils: replace `double-ended-queue` (npm) with in-tree `Deque<T>` (~80 lines, array-backed with head index for amortized O(1) shift). 4 consumer files updated. Also adds static `EventEmitter.listenerCount`/`defaultMaxListeners` for type-validation parity with the previous published version. | **−2,157** | −621 |
 | 11 | `ec4c2cd96f` | client-utils: replace `base64-js` (npm) with two ~10-line `btoa`/`atob` helpers in `bufferBrowser.ts`; chunk via `String.fromCharCode.apply` to dodge Chrome's call-stack limit on large blobs. Browser-only path. | **−1,090** | −498 |
+| 12 | _(pending)_ | container-loader: replace the `debug` (npm) package with an in-tree `minimalDebug.ts` (~190 lines) used solely by `DebugLogger`. Replicates `debug` v4.4 browser semantics — `localStorage.debug`/`DEBUG` + `process.env.DEBUG` enablement, glob namespace matching, `-` skips, `.enabled` get/set, `.extend`, static `.log` (`console.debug ?? console.log`). Drops both `debug` (4,669 B) and its transitive `ms` (1,402 B) from the bundle while preserving the `localStorage.debug = "fluid:*"` partner diagnostic contract. Removes `debug` + `@types/debug` from `package.json`. | **−5,010** | −1,925 |
 
-**Cumulative: 1,019,378 → 968,720 = −50,658 B parsed (−4.97%) / ~270,000
-→ 258,677 = ~−11,300 B gzip (−4.2%).**
+**Cumulative: 1,019,378 → 963,710 = −55,668 B parsed (−5.46%) / ~270,000
+→ 256,752 = ~−13,250 B gzip (−4.9%).**
 
 ---
 
@@ -270,7 +271,7 @@ scenario's bundle.
 | F4 | `runTransactionAsync` removal | ~1 KB | Cross-cutting interface change in 3 impl classes + 2 alpha interfaces + 4+ test rewrites + API report regen. Cost vs. value too high. |
 | F8 | Diagnostic exports (`exportVerbose`, `getRemovedRoots`, `assertNoUntrackedRoots`, plus their `SharedTreeKernel.contentSnapshot`/`exportVerbose` wirings) | **−1,967 B parsed (stubbed)** | 10 test files including snapshot-consistency suites use `contentSnapshot()` for tree comparison. Test-rewrite cost vastly exceeds the win. |
 | N5 | `semver-ts` inline (runtime side only) | <500 B realistic | `dds/tree` pins most of the package via `gt`/`lt` in `modular-schema/modularChangeFamily.ts` and `codec/versioned/codec.ts`; removing only the runtime side leaves the polyfill in. Findings doc's earlier ~2.2 KB estimate predates the polyfill swaps that already shrank the surrounding bundle. |
-| N6 | `debug` from default Loader path | ~4.7 KB (`debug/src/browser.js` 2,632 B + `ms` 1,402 B + remainder) | `DebugLogger` is part of the loader's legacy public surface; `localStorage.debug = "fluid:*"` is a documented diagnostic for partner teams. Mitigation requires a public-API entry-point split. |
+| N6 | `debug` from default Loader path | **LANDED −5,010 / −1,925 gzip** (see §3 row 12) | ✅ Replaced the `debug` npm package with an in-tree `minimalDebug.ts` that preserves `debug` v4.4 browser semantics exactly — including the `localStorage.debug = "fluid:*"` partner diagnostic. The earlier assumption (that shedding `debug` required a public-API entry-point split) was wrong: re-implementing the small `debug` subset DebugLogger uses keeps the diagnostic and drops the dep + its transitive `ms`. Same proven pattern as the `events`/`path-browserify`/`double-ended-queue`/`base64-js` swaps. |
 | N7 | `dds/merge-tree`/`dds/sequence` tree-shake from `Marker`/`ReferenceType`/`refGetTileLabels` | **0 B (this scenario)**; ≤9,250 B asymmetric ceiling, **not barrel-fixable** | **Audited via removal experiments.** The "~130 KB" was the *full* merge-tree (92,732 B) + sequence (40,005 B) graph — pulled by `SharedString`/`createOverlappingIntervalsIndex`, **not** by these three symbols. Dropping the three from the entry moved the bundle by **−53 B** (minification noise; merge-tree subtotal even rose 6 B). Imported *alone* (no `SharedString`), the three pull only **9,250 B** of merge-tree and **0 B** of sequence. Of that, `ReferenceType`+`refGetTileLabels` are **374 B** (`ops.ts` 242 + `referencePositions.ts` 132 — already isolated, barrel shakes cleanly) and `Marker` is **~8,876 B** via real segment-class coupling (`localReference.ts` 4,854, `mergeTreeNodes.ts` 2,231, `mergeTreeTracking.ts` 661, `segmentInfos.ts` 652, …) that no re-export / package-`exports` change can break. |
 | F1+F2 | Branching + revertibles subclass split | ~6,500 own + ~2,500 transitive | Architectural; introduces `BranchingTreeCheckout extends TreeCheckout` and a feature-flag arg to `createTreeCheckout`. Public-API impact on `TreeView.fork()`, `TreeBranchAlpha`, the `getRevertible` callback. **Caveat**: savings only materialize when a consumer uses the non-branching subclass — since `SharedTree.view` exposes `fork`/`createSharedBranch` unconditionally, this scenario would still get the branching subclass. Needs a `SharedTree`-side split too to land the bytes. |
 | — | `lz4js` lazy-load | ~4.7 KB | `OpCompressor`/`OpDecompressor` are eagerly instantiated in `containerRuntime.ts`; making them lazy would inject async boundaries into op processing for inbound-decompression, which can't always know up-front that an op is compressed. |
@@ -622,9 +623,11 @@ split landed −4,702 B parsed in stub form.)
 4. **Closed-kind-set `ModularChangeFamily`** monomorphization. ~10 KB
    ceiling but research-grade — has correctness, layer-compat, and
    persisted-format implications.
-5. **`debug` from default Loader path** (N6) via a `DebugLogger`
-   entrypoint split. ~4.7 KB. Risk: medium — diagnostic that partner
-   teams use today.
+5. ~~**`debug` from default Loader path** (N6) via a `DebugLogger`
+   entrypoint split. ~4.7 KB.~~ ✅ **LANDED** (§3 row 12, −5,010 / −1,925
+   gzip) — done *without* an entrypoint split by re-implementing the
+   `debug` subset in-tree (`minimalDebug.ts`), preserving the
+   `localStorage.debug` partner diagnostic.
 
 > N7 (`dds/merge-tree` exports-granularity audit) is **closed** — audited
 > with **0 B** realizable win for this scenario; see §5. The "~130 KB"
