@@ -1,7 +1,7 @@
-# Bundle-size reductions: `encapsulated-with-shared-tree`
+# Bundle-size reductions: `encapsulated-no-tree`
 
 High-level summary of bundle-size reductions for the
-`encapsulated-with-shared-tree` scenario. Companion to the detailed
+`encapsulated-no-tree` scenario. Companion to the detailed
 [BUNDLE_SIZE_FINDINGS.md](BUNDLE_SIZE_FINDINGS.md) and
 [TREE_CHECKOUT_ANALYSIS.md](TREE_CHECKOUT_ANALYSIS.md). This doc answers two
 questions:
@@ -15,35 +15,57 @@ Both sections are ordered **descending by reduction size**.
 
 ## Bundle baseline / current state
 
-| Milestone | Parsed | Gzip |
-|---|---:|---:|
-| Pre-session baseline (single-chunk) | 1,019,378 B | ~270,000 B |
-| After dep/DCE work (latest: `debug`→`minimalDebug`), single-chunk total | 955,980 B | 253,452 B |
-| **Entry chunk** after enabling code-splitting (remove `maxChunks:1`) | **929,615 B** | **247,787 B** |
-| **Total landed (entry-chunk basis)** | **−89,763 B (−8.8%)** | **~−22,200 B (−8.2%)** |
+> **Scope change (this branch): tree removed.** The scenario was renamed from
+> `encapsulated-with-shared-tree` to `encapsulated-no-tree` and the
+> `@fluidframework/tree/legacy` re-export was deleted from `src/index.ts`. All
+> `dds/tree`-specific reductions below (rows 1–3) are therefore **out of scope**
+> for the current target — they shrank tree code that is no longer in the bundle.
+> They are retained for the historical record only.
 
-> ### Metric change: entry chunk vs single-chunk total
-> Earlier work measured a **single forced chunk** (the scenario pinned
-> `LimitChunkCountPlugin({ maxChunks: 1 })`). That over-counts initial download
-> size: the official Fluid metric (`getEntryStatsProcessor`) sums only an
-> entrypoint's *initial* assets, and the ship build (`webpack.config.cjs`) has no
-> chunk limit, so code behind `await import(...)` (e.g. the summarizer) ships as a
-> **separate async chunk** that is not part of initial download. Removing
-> `maxChunks:1` lets the summarizer split out:
->
-> | | Parsed | Gzip |
-> |---|---:|---:|
-> | Entry chunk (initial download) | 929,615 B | 247,787 B |
-> | Async chunk `606.*.js` (summarizer, loaded only when client summarizes) | 28,805 B | 7,178 B |
-> | Total across both chunks | 958,420 B | — |
->
-> All subsequent **lazy-load** reductions are measured against the **entry chunk**,
-> because moving conditional code into an async chunk reduces initial download even
-> though total bytes are merely deferred (not deleted).
->
-> Note: the findings doc's "current" figure (968,720 B) predates the
-> shape-aware-chunker commit `1517e1b2b7` (−7,526 B) and the
-> `debug`→`minimalDebug` replacement (−5,010 B).
+### Ground-truth no-tree measurements (entry chunk)
+
+All figures are **parsed = file size** (source-map-explorer total == `stat -c%s`
+for these Terser-minified bundles) for the entry chunk
+`build/scenarios/encapsulated-no-tree/encapsulated-no-tree.js`, with
+code-splitting enabled (no `LimitChunkCountPlugin`).
+
+| Milestone | Entry parsed | Entry gzip |
+|---|---:|---:|
+| No-tree baseline, all dep-swaps applied, before id-compressor lazy-load | 591,600 B | 155,166 B |
+| **After id-compressor lazy-load (`6bde337df1`)** | **558,425 B** | **145,563 B** |
+
+Async chunks (loaded only when the corresponding feature is used; **not** part
+of initial download): `606.*` summarizer 28,796 B; `480.*` + `183.*`
+id-compressor 18,390 + 15,732 B. Total across all chunks: 621,343 B parsed.
+
+### Target (from real FF 2.80.0 consumer bundle)
+
+The consuming app's hard requirement is **total bundle ≤ 200 KB gzip
+post-babel**. Translated to this harness's metric (Fluid pre-transpile parsed
+bytes):
+
+| Quantity | Bytes |
+|---|---:|
+| Fluid footprint in consumer (pre-transpile parsed) | 673,792 |
+| **Fluid target (pre-transpile parsed)** | **407,532** |
+| **Required reduction** | **−266,260** |
+
+The harness measures **absolute byte deltas** that transfer to the consumer for
+shared core code; it does not reproduce the consumer's absolute number (their
+app uses a narrower API slice plus 2.80→2.101 drift).
+
+### Honest ceiling (non-tree, in-scope)
+
+Landed in-scope reductions total **≈ −51 KB entry parsed** (18,062 dep-swaps +
+33,175 id-compressor lazy-load). The remaining entry chunk (558,425 B) is
+dominated by code that loads **unconditionally** on the core hot path:
+`merge-tree` (92,732) + `sequence` (40,005) pulled by `SharedString`,
+`container-runtime` core (~150 KB), `container-loader` (~103 KB), `map` (~36 KB).
+Closing the remaining ~150 KB gap to 407,532 B is **not achievable on non-tree
+FF core alone** — it requires either (a) deferring `SharedString`/`merge-tree`
+via DDS lazy-registration (a consumer/app concern, not a core change) or (b)
+re-including and shrinking tree (explicitly excluded by the current scope). This
+is the gating decision for the user.
 
 ---
 
@@ -55,9 +77,10 @@ time each change landed, against this scenario's bundle.
 
 | # | Commit | Change | Parsed Δ | Gzip Δ |
 |---|--------|--------|---------:|-------:|
-| 1 | `f39c28c357` | **TypeBox barrel-import rewrite** — replace `import { Type }` (namespace object, defeats `usedExports`) with named imports of the specific kinds; reconstruct a local `const Type = {…}` so call sites are unchanged. 35 `dds/tree` files. TypeBox: 39,283 → 12,580 B (−68%). | **−25,764** | **−5,541** |
-| 2 | `a636e62391` | **`importHelpers` + `tslib` — `dds/tree` only.** Stops `tsc` emitting `__classPrivateFieldGet/Set` / `__esDecorate` / `__runInitializers` inline per file (12–16× duplicated, un-dedupable by `concatenateModules`). 17 `dds/tree` modules collapse to one `tslib` import. | **−9,466** | −621 |
-| 3 | `1517e1b2b7` | **Skip shape-aware chunker on default-policy path** — add `basicOnlyChunkField`/`basicOnlyChunkTree` (policy-free, `BasicChunk`-only) and route the 4 default-policy callers through them. DCEs `uniformChunk.ts` (5,908 → 0 B) + the `Chunker`/shape-inference surface. | **−7,526** | −3,176 |
+| 0 | `6bde337df1` | **Lazy-load id-compressor implementation (no-tree, IN SCOPE)** — move the four value imports (`createIdCompressor`/`createSessionId`/`deserializeIdCompressor`/`toIdCompressorWithCore`) from a static import to an `await import()` in the async `loadRuntime2` path, taken only when id-compressor is enabled (off by default). The module resolves before any synchronous compressor construction, preserving the documented sync-init requirement. Code moves to async chunks `480.*`+`183.*`. **Re-measured against the no-tree entry chunk.** | **−33,175** | **−9,603** |
+| 1 | `f39c28c357` | **TypeBox barrel-import rewrite** _(tree-only — OUT OF SCOPE now tree removed)_ — replace `import { Type }` (namespace object, defeats `usedExports`) with named imports of the specific kinds; reconstruct a local `const Type = {…}` so call sites are unchanged. 35 `dds/tree` files. TypeBox: 39,283 → 12,580 B (−68%). | **−25,764** | **−5,541** |
+| 2 | `a636e62391` | **`importHelpers` + `tslib` — `dds/tree` only** _(tree-only — OUT OF SCOPE)_. Stops `tsc` emitting `__classPrivateFieldGet/Set` / `__esDecorate` / `__runInitializers` inline per file (12–16× duplicated, un-dedupable by `concatenateModules`). 17 `dds/tree` modules collapse to one `tslib` import. | **−9,466** | −621 |
+| 3 | `1517e1b2b7` | **Skip shape-aware chunker on default-policy path** _(tree-only — OUT OF SCOPE)_ — add `basicOnlyChunkField`/`basicOnlyChunkTree` (policy-free, `BasicChunk`-only) and route the 4 default-policy callers through them. DCEs `uniformChunk.ts` (5,908 → 0 B) + the `Chunker`/shape-inference surface. | **−7,526** | −3,176 |
 | 4 | `80571ad8fe` | **Replace `events` (npm) polyfill** with in-tree `EventEmitter` (~150 lines, `WeakMap`-backed, fires `newListener`/`removeListener`). Also drops `events_pkg` import in container-loader `quorum.ts`. | **−4,464** | −1,223 |
 | 5 | `dde412e121` | **Replace `path-browserify`** with ~35 lines of inline posix path helpers in `dds/map` `directory.ts` (full `..`/`.`/multi-slash semantics). | **−3,590** | −1,332 |
 | 6 | `be4b57addd` | **`importHelpers` + `tslib` — 4 more packages** (container-runtime, container-loader, sequence, shared-object-base; 6 files total). Broken down per package below. | **−3,314** | −853 |
@@ -121,15 +144,14 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 | **`sequence-field` codec V2+V3 pin at build time** — currently both kept for runtime `ClientVersionDispatching`. | **~4.7 KB** | **Medium** | Requires pinning the wire-codec version at build time instead of `MinimumVersionForCollab` runtime selection. |
 | **`ModularChangeFamily` private-method hoist (#8)** | **−1,553** / −204 gzip | **Medium** | Stub-measured; net well below the churn cost (39-method refactor across a 3.2K-line file, loss of `private` encapsulation). |
 
-### Scenario-level lever (not a package change)
+### Scenario-level lever (LANDED)
 
-- **Drop `LimitChunkCountPlugin({ maxChunks: 1 })`** — the summarizer
-  cluster (~42 KB) is already factored as `summaryDelayLoadedModule/*` for
-  code-splitting but is forced into the initial chunk by the single-chunk
-  plugin. Accepting two chunks sheds **~42 KB** from the initial chunk.
-  **LOE: low**, but only meaningful if the consumer can load a second
-  chunk (total bytes unchanged). This is a scenario/webpack-config tweak,
-  not a Fluid package change.
+- **Dropped `LimitChunkCountPlugin({ maxChunks: 1 })`** — the summarizer
+  cluster (~28.8 KB, already factored as `summaryDelayLoadedModule/*`) and the
+  lazy id-compressor now ship as **separate async chunks** instead of being
+  force-merged into the initial chunk. This is what makes the entry-chunk
+  metric meaningful and is a prerequisite for the id-compressor lazy-load (row
+  0). See `webpack.config.cts` line 91.
 
 ### Hard pass (documented, not worth pursuing)
 
@@ -148,11 +170,10 @@ are all either tree-owned or genuinely-used core:
   are eagerly constructed on the op hot path.
 - `tslib` (1.9 KB) — intentionally shared via `importHelpers`.
 - `semver-ts` (0.8 KB) — pinned by `dds/tree`.
-- `id-compressor` (~11.7 KB) — statically imported but only conditionally
-  constructed; a true lazy-load yields **0 B** here because
-  `LimitChunkCountPlugin({ maxChunks: 1 })` merges the split chunk back
-  (same as the summarizer cluster). Only meaningful with the scenario-level
-  lever above.
+- `id-compressor` (~18 KB) — **DONE (`6bde337df1`, −33,175 B entry).** Now
+  lazy-loaded via `await import()` in `loadRuntime2`, taken only when
+  id-compressor is enabled (off by default). With `LimitChunkCountPlugin`
+  removed, the split chunk stays out of the entry chunk. See row 0 above.
 
 Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 `container.ts` 29.8 KB, `channelCollection.ts`, `dataStoreContext.ts`,
