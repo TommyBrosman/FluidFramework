@@ -88,6 +88,25 @@ required by `SharedString`. If the mobile app uses `SharedString`, that code is
 required and cannot be removed; if it does not, the removal is a consumer-side
 API-surface trim, not a core change. This is the gating decision for the user.
 
+### True-removal ledger (single chunk, non-tree) — needs decisions
+
+Every large remaining lever is gated on a product/compat/scope decision, not on
+engineering. Ordered by size:
+
+| Lever | True-removal size | Gating decision | Risk |
+|---|---:|---|---|
+| `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | Does the mobile app use `SharedString`? If no → drop the export from `index.ts`. | Consumer API-surface |
+| `SharedDirectory` (pulls `map`) | **~35,738 B** | Does the app use `SharedDirectory`/`SharedMap`? | Consumer API-surface |
+| `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **~33,496 B** | Strip via build-time DefinePlugin-gated DCE? id-compressor is off by default; the code comment itself flags the bundle cost. Changes the runtime-enable contract. | Core build-flag (medium) |
+| `SharedMap` aqueduct back-compat registration | **~9,506 B** | Are pre-0.10 SharedMap-DataObject documents still in scope? If no → delete the registration. | Compat (load-bearing) |
+| `lz4js` (`OpCompressor`/`OpDecompressor`) | **~4,672 B** | Op compression — decompressor is on the inbound hot path; can it be dropped if the app never sends compressed ops? | Core hot-path |
+| Re-include + shrink `tree` | (the only other 130 KB+ block) | Was excluded by an earlier instruction; revisit if the target requires it. | Scope |
+
+**Safe unilateral true removals are exhausted at the ≈18 KB of dep-swaps already
+landed** (npm-polyfill replacement complete; `importHelpers` yields 0 on the
+remaining in-bundle packages — their esnext output emits no inlined tslib
+helpers). Any further material reduction requires one of the decisions above.
+
 ---
 
 ## 1. Known reductions made (>1 KB parsed)
@@ -190,11 +209,16 @@ swaps have removed every replaceable third-party polyfill reachable from
 the non-tree dependency graph. The remaining `node_modules` contributors
 are all either tree-owned or genuinely-used core:
 
-- `@tylerbu/sorted-btree-es6` `b+tree.js` (15.9 KB) — pulled by `dds/tree`
-  (off-limits) via `bTreeUtils`/`rangeMap`/`editManager`/`modularChangeFamily`
-  etc.; stays regardless of any merge-tree change. `decompose`/`parallelWalk`
-  (~9 KB) are pulled by tree's `union` import **and** sit on the compose
-  hot path.
+- `@tylerbu/sorted-btree-es6` `b+tree.js` (15.5 KB) — **pulled by `id-compressor`**
+  (`sessions.ts` instantiates `BTree` directly), NOT by tree (tree is removed from
+  this bundle). `BTree` is a single monolithic class, so nothing tree-shakes once it
+  is instantiated. It therefore rides along with the id-compressor subtree and can
+  only be removed wholesale, together with id-compressor, when id-compressor is
+  unused. **This makes the id-compressor subtree ≈33 KB** (17,954 id-compressor +
+  15,542 sorted-btree), the single largest non-tree block that is *functionally*
+  optional (id-compressor is off by default) — but a TRUE removal requires a
+  build-time opt-out (DefinePlugin-gated DCE) so terser can drop the import, since a
+  static import keeps it in the single chunk.
 - `lz4js` (~4.7 KB, under the 5 KB bar) — `OpCompressor`/`OpDecompressor`
   are eagerly constructed on the op hot path.
 - `tslib` (1.9 KB) — intentionally shared via `importHelpers`.
