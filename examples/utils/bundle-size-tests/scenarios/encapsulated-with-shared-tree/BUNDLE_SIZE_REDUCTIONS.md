@@ -113,6 +113,27 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 
 ### Hard pass (documented, not worth pursuing)
 
+**npm-polyfill replacement is now exhausted for non-tree deps.** The
+`events` / `path-browserify` / `double-ended-queue` / `base64-js` / `debug`
+swaps have removed every replaceable third-party polyfill reachable from
+the non-tree dependency graph. The remaining `node_modules` contributors
+are all either tree-owned or genuinely-used core:
+
+- `@tylerbu/sorted-btree-es6` `b+tree.js` (15.9 KB) — pulled by `dds/tree`
+  (off-limits) via `bTreeUtils`/`rangeMap`/`editManager`/`modularChangeFamily`
+  etc.; stays regardless of any merge-tree change. `decompose`/`parallelWalk`
+  (~9 KB) are pulled by tree's `union` import **and** sit on the compose
+  hot path.
+- `lz4js` (~4.7 KB, under the 5 KB bar) — `OpCompressor`/`OpDecompressor`
+  are eagerly constructed on the op hot path.
+- `tslib` (1.9 KB) — intentionally shared via `importHelpers`.
+- `semver-ts` (0.8 KB) — pinned by `dds/tree`.
+- `id-compressor` (~11.7 KB) — statically imported but only conditionally
+  constructed; a true lazy-load yields **0 B** here because
+  `LimitChunkCountPlugin({ maxChunks: 1 })` merges the split chunk back
+  (same as the summarizer cluster). Only meaningful with the scenario-level
+  lever above.
+
 Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 `container.ts` 29.8 KB, `channelCollection.ts`, `dataStoreContext.ts`,
 `deltaManager.ts`, `connectionManager.ts`) is on hot paths and not
