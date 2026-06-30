@@ -172,6 +172,17 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of attachment-blob support. This app uses only SharedString / SharedDirectory and
+		// never creates or references attachment blobs, so the BlobManager implementation (and its
+		// snapshot/summary helpers) is dead weight. Replacing `blobManager/index.js` with the stub
+		// shipped by container-runtime drops the subgraph; the stub returns valid-empty summary/GC
+		// contributions and throws only on actual blob create/get (which never happen here).
+		new webpack.NormalModuleReplacementPlugin(
+			/blobManager[\\/]index\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(/index\.js$/, "blobManagerStub.js");
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`

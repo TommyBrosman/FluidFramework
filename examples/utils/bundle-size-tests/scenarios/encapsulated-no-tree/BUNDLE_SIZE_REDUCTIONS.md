@@ -43,6 +43,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ summarizer stub polyfill** (`NormalModuleReplacementPlugin`) | **546,425 B** | **142,246 B** |
 | **+ summarizer-election stub polyfill** (`NormalModuleReplacementPlugin`) | **530,849 B** | **138,528 B** |
 | **+ op-perf & signal telemetry stub polyfills** (`NormalModuleReplacementPlugin`) | **522,055 B** | **136,776 B** |
+| **+ blobManager stub polyfill** (`NormalModuleReplacementPlugin`) | **513,858 B** | **134,712 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -126,6 +127,7 @@ engineering. Ordered by size:
 | `summarizer-election` machinery (`SummaryManager` + `OrderedClientElection` + `SummarizerClientElection` + terser DCE) | **−15,576 B (implemented)** | ✅ **IMPLEMENTED.** A client that summarizes server-side never participates in summarizer election, so the election + `SummaryManager` graph is dead weight. Extracted into a `summaryManagerDelayLoadedModule` leaf behind an `await import()`; the app swaps in a **no-op** `setupSummaryManager` stub via `NormalModuleReplacementPlugin`. Unlike the throwing stubs above, this path runs on every normal client, so the stub returns an empty result (== "does not elect"). See section below. | Build-config opt-in (low) |
 | `connectionTelemetry` (`OpPerfTelemetry` op round-trip / connection perf telemetry) | **−5.7 KB (implemented, part of −8,794)** | ✅ **IMPLEMENTED.** Pure observability — no effect on op processing or runtime state. Whole module replaced with a no-op `ReportOpPerfTelemetry` stub via `NormalModuleReplacementPlugin`. Zero behavior/compat risk; only loses op-perf telemetry. See section below. | None (telemetry-only) |
 | `signalTelemetryProcessing` (`SignalTelemetryManager` broadcast-signal latency telemetry) | **−3.15 KB (implemented, part of −8,794)** | ✅ **IMPLEMENTED.** Pure observability — its only outbound mutation is an optional telemetry sequence stamp not used for delivery/ordering. Whole module replaced with a no-op stub. Zero behavior/compat risk; only loses signal-latency telemetry. See section below. | None (telemetry-only) |
+| `blobManager` (`BlobManager` attachment-blob support + snapshot/summary helpers) | **−8,197 B (implemented)** | ✅ **IMPLEMENTED.** App uses only SharedString / SharedDirectory and never creates/references attachment blobs. Whole `blobManager/index.js` replaced with a stub: valid-empty summary tree (omitted by the consumer guard) + empty GC data on the always-run paths, throwing only on actual `createBlob`/`getBlob`. A runtime drift test pins the reproduced path constants. See section below. | Build-config opt-in (low; no-blob assumption) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
@@ -317,6 +319,42 @@ specs (`test/connectionTelemetryStub.spec.ts`,
 stubs' value exports and `SignalTelemetryManager`'s public method signatures stay in
 sync with the real modules. The full container-runtime suite (957 tests) passes
 unchanged.
+
+### Excluding BlobManager (~8.2 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **522,055 → 513,858 B parsed** (−8,197) and
+**136,776 → 134,712 B gzip** (−2,064). The whole `blobManager/index.js` module (the
+`BlobManager` class plus its snapshot/summary helpers) is replaced with a stub
+shipped by container-runtime.
+
+**Why it is removable here.** `BlobManager` implements attachment-blob support —
+uploading binary blobs and referencing them via handles. This app uses only
+`SharedString` / `SharedDirectory` and never creates or references attachment blobs,
+so none of that machinery is needed. `blobManager/index.js` is the single
+value-import entry point: `containerRuntime.ts` imports the class + helpers from it,
+and the package `index.ts` imports only the `IBlobManagerLoadInfo` *type* (erased).
+
+**Why the stub is not purely no-op.** Unlike the telemetry stubs, `BlobManager`
+contributes to the **summary tree** (`summarize()`, containerRuntime.ts ~2689) and
+the **GC graph** (`getGCData()`, ~4080) on paths that run for *every* client. The
+stub therefore returns *valid empty* results there: `summarize()` returns an empty
+`SummaryTreeBuilder().getSummaryTree()` (the consumer already omits the blobs tree
+when it is empty — "Some storage (like git) doesn't allow empty tree"), and
+`getGCData()` returns `{ gcNodes: {} }` (an empty `addNodes`). `loadBlobManagerLoadInfo`
+returns `{}` (a blob-free snapshot has no `.blobs` tree). Methods only reached when
+the app actually uses blobs (`createBlob`, `getBlob`) **throw** (fail fast). All
+other methods (`processBlobAttachMessage`, `patchRedirectTable`, `reSubmit`,
+`deleteSweepReadyNodes` → `[]`, `getPendingBlobs` → `undefined`, etc.) are no-ops.
+
+**Safety / contract.** Appropriate for clients that never use attachment blobs. The
+tiny path constants/helpers (`blobManagerBasePath`, `blobsTreeName`,
+`redirectTableBlobName`, `getGCNodePathFromLocalId`, `isBlobPath`) are reproduced in
+the stub (re-exporting them from the real module would pull the implementation back
+in); a **runtime drift test** (`test/blobManager/blobManagerStub.spec.ts`) asserts
+they equal the real values, and additional tests verify the empty summary/GC shapes.
+Compile-time `requireAssignableTo` specs keep the value exports and public method
+signatures in sync. The full container-runtime suite (960 tests, +3 new) passes —
+the suite still exercises the *real* BlobManager.
 
 ### Research: where lz4js is used (~4,672 B)
 
