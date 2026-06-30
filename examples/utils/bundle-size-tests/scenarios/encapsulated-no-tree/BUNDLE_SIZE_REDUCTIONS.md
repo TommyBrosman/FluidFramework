@@ -46,6 +46,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ blobManager stub polyfill** (`NormalModuleReplacementPlugin`) | **513,858 B** | **134,712 B** |
 | **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
 | **+ summarizer-node tree stub polyfill** (`NormalModuleReplacementPlugin`) | **483,822 B** | **127,166 B** |
+| **+ summaryCollection stub polyfill** (`NormalModuleReplacementPlugin`) | **479,772 B** | **126,210 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -134,6 +135,7 @@ engineering. Ordered by size:
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | Summarizer-node tracking tree (`summary/summarizerNode/summarizerNode` 5,612 + `summary/summarizerNode/summarizerNodeWithGc` 3,690 + terser DCE) | **−9,150 B (implemented)** | ✅ **IMPLEMENTED.** The node tree tracks per-node summary/GC state so the summarizer client can build incremental summaries. This client summarizes server-side (summarizer stubbed) and runs with GC disabled (`garbageCollection` stubbed), so the tree's reference / used-route / change tracking is dead weight. `createRootSummarizerNodeWithGC` is the single value site (containerRuntime.ts), and `summarizerNode.js` is imported only by `summarizerNodeWithGc.js`, so replacing the latter via `NormalModuleReplacementPlugin` drops both. The stub keeps every-client lifecycle faithful (createChild/getChild/deleteChild maintain a child map; recordChange/invalidate are no-ops; isReferenced ⇒ true since GC is disabled) and throws on summarizer-only/GC methods. Verified-tolerant consumers: `getChild` undefined is guarded (dataStoreContext.ts), `referenceSequenceNumber` has no datastore-infra readers, `invalidate`/`recordChange` affect only summary state. See section below. | Build-config opt-in (consumer summarizes server-side + GC disabled) |
 | Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `gc/gcUnreferencedStateTracker` 1,789 + `gc/gcSummaryStateTracker` 1,680 + `gc/gcConfigs` 1,282 + `gc/gcReferenceGraphAlgorithm` + terser DCE) | **−20,886 B (implemented)** | ✅ **IMPLEMENTED.** This client summarizes server-side (the summarizer is already stubbed) and the consuming app does not rely on GC sweep / tombstone deletion enforcement. The single value site `GarbageCollector.create(...)` (containerRuntime.ts:1932, all ~20 usages via the `IGarbageCollector` interface) is reached only through `gc/garbageCollection.js`; replacing that file with a no-op stub (`shouldRunGC === false`, `isNodeDeleted === false`, valid-empty summary/metadata) drops it plus its **exclusive** deps. `gcHelpers`/`gcDefinitions` (`GCNodeType` enum) stay alive via `summarizerNodeWithGc`/`channelCollection` but are small. See section below. | Build-config opt-in (consumer asserts no reliance on GC sweep) |
+| `SummaryCollection` summary-ack tracking (`summary/summaryCollection` + terser DCE) | **−4,050 B (implemented)** | ✅ **IMPLEMENTED.** `SummaryCollection` watches inbound summary-ack/nack ops so a *summarizing* client can await its own summaries. It is constructed unconditionally (containerRuntime.ts:2290) but its only consumers — the client-side `Summarizer` and the `setupSummaryManager` election — are **already stubbed out**, and ContainerRuntime never calls a method on the instance on the non-summarizer path. `SummaryCollection` is the module's only value export and is not re-exported by the scenario `index.ts`, so replacing `summary/summaryCollection.js` with a no-op stub (faithful event-emitter + trivial accessors; throws on the summarizer-only `createWatcher`/`waitSummaryAck`, which are never reached) drops it cleanly. Below the 5 KB bar but zero-risk and a true removal. See section below. | Build-config opt-in (consumer summarizes server-side) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` compress+decompress + `OpCompressor` + `OpDecompressor` | **~4,412 B (measured)** | ⏸️ **GATED — below threshold + highest interop risk; not landed.** Op compression is **ON by default** (grouped batching ⇒ `minimumBatchSizeInBytes: 614400`, `compressionDefinitions.ts:42`). `lz4js` is a CJS module (compress/decompress cannot be tree-shaken apart); redirecting the `lz4js` request to a throwing stub was measured at only **−4,412 B parsed / −1,719 B gzip** (the 12.7 KiB raw source minifies down hard). `decompress` is required inbound because **any participant** may send a batch > ~600 KB as a compressed op, so removal needs a session-wide guarantee that no client ever compresses (or compression is disabled document-wide). Both **below the 5 KB candidate bar** and the **riskiest** change considered (a violated precondition fails the op stream, not just a local feature). Documented, not landed. | Wire-format interop (session-wide) |
 | Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
@@ -465,6 +467,39 @@ runtime tests assert the disabled/valid-empty behavior. The regex
 (`garbageCollectionStub.js`). The full container-runtime suite (962 tests, +2 new) passes
 — the suite still exercises the *real* `GarbageCollector`.
 
+### Excluding `SummaryCollection` summary-ack tracking (~4.1 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **483,822 → 479,772 B parsed** (−4,050) and
+**127,166 → 126,210 B gzip** (−956). `summary/summaryCollection.js` (the
+`SummaryCollection` class) is replaced with a no-op stub shipped by container-runtime;
+source-map confirms only `summaryCollectionStub.ts` remains and the real module is gone.
+
+**Why it is removable here.** `SummaryCollection` listens to inbound summary-ack/summary-nack
+ops and exposes watchers so a *summarizing* client can await acknowledgement of its own
+summaries. It is constructed unconditionally (`containerRuntime.ts:2290`), but on this
+interactive (non-summarizer) client its only consumers are dead weight: the client-side
+`Summarizer` and the `setupSummaryManager` election are **already replaced by stubs**, and
+ContainerRuntime never calls a method on the `SummaryCollection` instance itself outside the
+`isSummarizerClient` branch (never taken here). `SummaryCollection` is the module's **only**
+value export — every other symbol (`ISummaryOpMessage`, `IAckedSummary`, `IClientSummaryWatcher`,
+etc.) is a type/interface (erased) — and it is **not** re-exported by the scenario's
+`index.ts`, so the replacement is a clean module-seam removal.
+
+**Why the stub mixes no-op and throwing members.** Several members are referenced on the
+always-run constructor/wiring path, so the stub keeps them faithful: it `extends
+TypedEventEmitter`, `latestAck`/`opsSinceLastAck` return empty values, and
+`addOpListener`/`removeOpListener`/`waitFlushed` are no-ops. The two summarizer-only entry
+points (`createWatcher`, `waitSummaryAck`) **throw**, because they are only reachable through
+the already-stubbed `Summarizer` and are never invoked on this client.
+
+**Safety / contract.** Appropriate for clients that summarize server-side (same precondition
+as the summarizer / election stubs), so it is a **consumer build-config opt-in**. A
+compile-time `requireAssignableTo` spec keeps the value exports and constructor signature in
+sync with the real module (both directions), and runtime tests assert the no-op accessors and
+the throwing summarizer-only methods. The regex `/[\\/]summaryCollection\.js$/` does not match
+the replacement module itself (`summaryCollectionStub.js`). The full container-runtime suite
+(968 tests, +3 new) passes — the suite still exercises the *real* `SummaryCollection`.
+
 ### Research: where lz4js is used (~4,672 B)
 
 `lz4js` enters the bundle through **two** static imports in container-runtime's
@@ -636,3 +671,20 @@ into op processing. See findings §5 and TREE_CHECKOUT_ANALYSIS §7.
   **~8,876 B** is real segment-class coupling (`localReference.ts`,
   `mergeTreeNodes.ts`, …) that a barrel/`exports` reshape cannot break.
   See findings §5 (N7).
+
+### Investigated this session — REJECTED (load-bearing / used)
+
+- **Sequence interval collections (~28 KB: `intervalCollection.ts` 15.6 KB +
+  `sequenceInterval.ts` 8.1 KB + supporting).** The single biggest remaining file-level
+  lever, but **the app uses intervals**: the scenario's `index.ts` re-exports
+  `SequenceInterval`, `ISequenceOverlappingIntervalsIndex`, and the value
+  `createOverlappingIntervalsIndex`. `IntervalCollectionMap` is also constructed
+  unconditionally in the `SharedSegmentSequence` base (`sequence.ts:552`) and woven into
+  the op path (`tryProcessMessage`/`tryResubmit`/`tryRollback`/`populate`). Load-bearing —
+  not removable.
+- **`documentSchema.ts` (~5.7 KB).** `DocumentsSchemaController` gates feature enablement
+  and validates schema ops on **every** client (not just summarizers); it is on the
+  always-run init + inbound-op path. Load-bearing — not removable.
+- **`telemetry-utils` core (~17 KB: logger / errorLogging / config).** Core logging
+  infrastructure used throughout the runtime. Not observability-only like the op-perf /
+  signal telemetry stubs — not removable.

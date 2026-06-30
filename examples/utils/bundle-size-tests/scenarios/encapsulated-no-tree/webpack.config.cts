@@ -218,6 +218,22 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of the summary-ack/nack tracking implementation (`summaryCollection.js`).
+		// `ContainerRuntime` constructs a `SummaryCollection` unconditionally but only passes it to the
+		// client-side `Summarizer` and the summarizer-election machinery — both already stubbed out in
+		// this bundle (this client summarizes server-side and never participates in election). It never
+		// calls a method on the instance, so the real implementation (which watches every op to track
+		// summary acks/nacks) is dead weight. Replacing it with the no-op stub shipped by
+		// container-runtime drops it. The "Stub" infix keeps this regex from matching the replacement.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]summaryCollection\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/summaryCollection\.js$/,
+					"summaryCollectionStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
