@@ -44,6 +44,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ summarizer-election stub polyfill** (`NormalModuleReplacementPlugin`) | **530,849 B** | **138,528 B** |
 | **+ op-perf & signal telemetry stub polyfills** (`NormalModuleReplacementPlugin`) | **522,055 B** | **136,776 B** |
 | **+ blobManager stub polyfill** (`NormalModuleReplacementPlugin`) | **513,858 B** | **134,712 B** |
+| **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -130,7 +131,7 @@ engineering. Ordered by size:
 | `blobManager` (`BlobManager` attachment-blob support + snapshot/summary helpers) | **−8,197 B (implemented)** | ✅ **IMPLEMENTED.** App uses only SharedString / SharedDirectory and never creates/references attachment blobs. Whole `blobManager/index.js` replaced with a stub: valid-empty summary tree (omitted by the consumer guard) + empty GC data on the always-run paths, throwing only on actual `createBlob`/`getBlob`. A runtime drift test pins the reproduced path constants. See section below. | Build-config opt-in (low; no-blob assumption) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
-| Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `summary/summarizerNode/summarizerNodeWithGc` 3,697) | **~17,996 B** | ⏸️ **GATED — biggest remaining clean lever; awaiting owner decision.** Seam-able like id-compressor: a single value site `GarbageCollector.create(...)` (~containerRuntime.ts:1932) with ~20 call sites all through the `IGarbageCollector` interface → preload a `createGarbageCollector` leaf in `loadRuntime2`, pass into the ctor, stub returns a no-op `IGarbageCollector`. Summary-interop concern is **moot** (this client summarizes server-side → never writes a summary). **Open precondition:** a no-op GC also disables this client's GC **sweep/tombstone deletion enforcement** (`isNodeDeleted` always false → a swept/tombstoned object could be loaded without the safety throw). Not landed without explicit confirmation that the app does not rely on GC sweep. | Data-integrity enforcement (needs sign-off) |
+| Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `gc/gcUnreferencedStateTracker` 1,789 + `gc/gcSummaryStateTracker` 1,680 + `gc/gcConfigs` 1,282 + `gc/gcReferenceGraphAlgorithm` + terser DCE) | **−20,886 B (implemented)** | ✅ **IMPLEMENTED.** This client summarizes server-side (the summarizer is already stubbed) and the consuming app does not rely on GC sweep / tombstone deletion enforcement. The single value site `GarbageCollector.create(...)` (containerRuntime.ts:1932, all ~20 usages via the `IGarbageCollector` interface) is reached only through `gc/garbageCollection.js`; replacing that file with a no-op stub (`shouldRunGC === false`, `isNodeDeleted === false`, valid-empty summary/metadata) drops it plus its **exclusive** deps. `gcHelpers`/`gcDefinitions` (`GCNodeType` enum) stay alive via `summarizerNodeWithGc`/`channelCollection` but are small. See section below. | Build-config opt-in (consumer asserts no reliance on GC sweep) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` (`OpDecompressor` inbound + `OpCompressor` outbound) | **~4,672 B** | See research below — `decompress` is genuinely required on the inbound path (any client may receive compressed ops). | Core hot-path |
 | Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
@@ -365,6 +366,47 @@ they equal the real values, and additional tests verify the empty summary/GC sha
 Compile-time `requireAssignableTo` specs keep the value exports and public method
 signatures in sync. The full container-runtime suite (960 tests, +3 new) passes —
 the suite still exercises the *real* BlobManager.
+
+### Excluding garbage collection (~20.9 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **513,858 → 492,972 B parsed** (−20,886) and
+**134,712 → 129,369 B gzip** (−5,343). `gc/garbageCollection.js` (the `GarbageCollector`
+class) is replaced with a no-op stub shipped by container-runtime, which drops it plus
+its exclusive dependencies (`gcTelemetry`, `gcUnreferencedStateTracker`,
+`gcSummaryStateTracker`, `gcConfigs`, `gcReferenceGraphAlgorithm`) and lets Terser DCE
+the now-dead GC handling in `containerRuntime.ts`.
+
+**Why it is removable here.** `GarbageCollector` performs reference tracking, the
+unreferenced→tombstone→sweep lifecycle, and writes/reads the GC blob in summaries. This
+client summarizes **server-side** (the summarizer is already stubbed out), so it never
+writes a summary or its GC data, and the consuming app does not rely on GC **sweep /
+tombstone deletion enforcement**. The seam is clean: `GarbageCollector.create(...)` is
+the single value site (`containerRuntime.ts:1932`), and all ~20 usages go through the
+`IGarbageCollector` interface field (`this.garbageCollector`). The heavy GC files are
+reachable only through `gc/garbageCollection.js`; the only GC code still needed elsewhere
+is the small `gcHelpers` (`cloneGCData`, `unpackChildNodesGCDetails`, `urlToGCNodePath`,
+used by `summarizerNodeWithGc`/`channelCollection`) and the `GCNodeType` enum in
+`gcDefinitions` — both stay and are tiny.
+
+**Why the stub is valid-empty, not throwing.** Several `IGarbageCollector` members run on
+always-executed paths (`nodeUpdated` on the op hot path, `isNodeDeleted` on load,
+`getBaseGCDetails`/`getMetadata` during init/summary-format negotiation), so the stub
+returns *valid empty / disabled* results rather than throwing: `shouldRunGC === false`
+(the runtime then skips GC entirely), `isNodeDeleted === false` (nothing is ever treated
+as swept — **this is the precondition**: the app must not rely on GC deletion
+enforcement), `getMetadata() === {}` (`gcFeature` undefined ⇒ "GC disabled" per the
+`IGCMetadata` contract), `getBaseGCDetails() === {}`, `summarize()`/`collectGarbage()`
+return `undefined`, and all reference-tracking / message entry points are no-ops.
+
+**Safety / contract.** Appropriate for clients that summarize server-side and do not
+enable GC sweep (sweep/tombstone enforcement is non-default in FF). The swap is a
+**consumer build-config opt-in** (the app author asserts the precondition), exactly like
+the id-compressor / summarizer / blobManager stubs. A compile-time `requireAssignableTo`
+spec keeps the value exports and the `create` signature in sync with the real module, and
+runtime tests assert the disabled/valid-empty behavior. The regex
+`/[\\/]garbageCollection\.js$/` does not match the replacement module itself
+(`garbageCollectionStub.js`). The full container-runtime suite (962 tests, +2 new) passes
+— the suite still exercises the *real* `GarbageCollector`.
 
 ### Research: where lz4js is used (~4,672 B)
 

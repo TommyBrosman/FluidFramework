@@ -183,6 +183,23 @@ const config: webpack.Configuration = {
 				resource.request = resource.request.replace(/index\.js$/, "blobManagerStub.js");
 			},
 		),
+		// TRUE removal of garbage collection. This app summarizes server-side (the summarizer is already
+		// stubbed out) and does not rely on GC sweep / tombstone deletion enforcement, so the
+		// GarbageCollector implementation and its exclusive dependencies (gc telemetry, the
+		// unreferenced-state and summary-state trackers, the reference-graph algorithm, and gc configs)
+		// are dead weight. Replacing `gc/garbageCollection.js` with the no-op stub shipped by
+		// container-runtime drops that subgraph; the stub reports `shouldRunGC === false`,
+		// `isNodeDeleted === false`, and valid-empty summary/metadata results. The "Stub" infix keeps this
+		// regex from matching the replacement module itself.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]garbageCollection\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/garbageCollection\.js$/,
+					"garbageCollectionStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
