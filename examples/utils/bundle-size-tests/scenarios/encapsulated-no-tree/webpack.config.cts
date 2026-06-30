@@ -112,6 +112,25 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of the summarizer implementation. The summarizer (~28 KB) is
+		// only needed by clients that summarize on the client; this mobile target
+		// summarizes server-side and never instantiates it. ContainerRuntime reaches
+		// the summarizer exclusively through a dynamic import of
+		// `./summary/summaryDelayLoadedModule/index.js`; every other reference is
+		// type-only except the public-API value re-exports (`Summarizer`,
+		// `RunningSummarizer`, ...), which resolve to the stub's throwing versions so
+		// the API surface is preserved while the implementation is dropped. Replacing
+		// that leaf module with the throwing stub shipped by container-runtime removes
+		// the entire subgraph from the single chunk.
+		new webpack.NormalModuleReplacementPlugin(
+			/summaryDelayLoadedModule[\\/]index\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/summaryDelayLoadedModule[\\/]index\.js$/,
+					"summaryDelayLoadedModuleStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`

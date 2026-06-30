@@ -40,6 +40,7 @@ for these Terser-minified bundles) for the single chunk
 | **No-tree single chunk, all dep-swaps applied** (`135357c859`) | **617,974 B** | **160,775 B** |
 | + id-compressor delay-load seam (no stub swap) | 618,397 B | 160,833 B |
 | **+ id-compressor stub polyfill** (`NormalModuleReplacementPlugin`) | **585,184 B** | **151,269 B** |
+| **+ summarizer stub polyfill** (`NormalModuleReplacementPlugin`) | **546,425 B** | **142,246 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -75,20 +76,22 @@ app uses a narrower API slice plus 2.80→2.101 drift).
 
 Under the single-chunk / true-removals-only rule, the landed wins are the
 **dep-swaps (≈ −18 KB)** — npm polyfills genuinely replaced by smaller in-tree
-code — plus the **id-compressor stub polyfill (≈ −33 KB)**, a true exclusion (not
-deferral) of the off-by-default id-compressor subtree (see below). Pure
-code-splitting / lazy-loading is still **disqualified**: it defers bytes that
-still ship in the single chunk. The id-compressor win is *not* deferral — the real
-module is replaced by a throwing stub at build time, so its bytes never ship.
+code — plus two stub-polyfill exclusions: the **summarizer (≈ −38.8 KB)** and the
+**id-compressor (≈ −33 KB)**, both true exclusions (not deferral) of subsystems
+this mobile client does not need (server-side summarization; id-compressor off by
+default). Pure code-splitting / lazy-loading is still **disqualified**: it defers
+bytes that still ship in the single chunk. These wins are *not* deferral — the real
+modules are replaced by throwing stubs at build time, so their bytes never ship.
 
-The remaining ~585 KB is dominated by code that is **genuinely reachable** from
+The remaining ~546 KB is dominated by code that is **genuinely reachable** from
 the scenario's API surface and cannot be deferred away:
 `merge-tree` (92,732) + `sequence` (40,005) pulled by `SharedString`,
-`container-runtime` core (~150 KB), `container-loader` (~103 KB), `map` (~36 KB).
+`container-runtime` core, `container-loader` (~103 KB), `map` (~36 KB).
 
 A true removal toward the target therefore requires one of:
-- **Build-time exclusion of an off-by-default subsystem** behind a replaceable
-  dynamic-import seam (the id-compressor stub-polyfill pattern, now landed);
+- **Build-time exclusion of an unused subsystem** behind a replaceable
+  dynamic-import seam (the stub-polyfill pattern — summarizer + id-compressor,
+  both now landed);
 - **Dead-code elimination** terser can't do automatically (back-compat shims
   behind effectively-constant conditions, e.g. the `SharedMap` aqueduct
   registration ≈ 9.5 KB);
@@ -101,13 +104,13 @@ Reaching −266,260 B on non-tree FF core via true removals alone is **infeasibl
 The app **confirms it uses `SharedString` and `SharedDirectory`** (and every other
 `index.ts` export), so the two largest non-tree blocks — `merge-tree`+`sequence`
 (≈133 KB) and `map` (≈36 KB) — are **required code** and off the table. With the
-id-compressor stub polyfill landed (≈33 KB) plus the dep-swaps (≈18 KB), the
-remaining true-removal candidates are the `SharedMap` aqueduct back-compat
-registration (≈9.5 KB, **open compat question**) and `lz4js` (≈4.7 KB, required on
-the inbound op path). Even all landed + candidate removals together reach only
-~66 KB — about a quarter of the 266 KB target. **The target is not reachable on
-non-tree FF code while preserving the app's required API surface.** See the
-true-removal ledger and research notes below.
+summarizer (≈38.8 KB) and id-compressor (≈33 KB) stub polyfills landed plus the
+dep-swaps (≈18 KB) — ~90 KB total — the remaining true-removal candidates are the
+`SharedMap` aqueduct back-compat registration (≈9.5 KB, **open compat question**)
+and `lz4js` (≈4.7 KB, required on the inbound op path). Even all landed + candidate
+removals together reach ~104 KB — under half the 266 KB target. **The target is not
+reachable on non-tree FF code while preserving the app's required API surface.** See
+the true-removal ledger and research notes below.
 
 ### True-removal ledger (single chunk, non-tree) — needs decisions
 
@@ -117,6 +120,7 @@ engineering. Ordered by size:
 | Lever | True-removal size | Gating decision | Risk |
 |---|---:|---|---|
 | `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | ❌ **RESOLVED — app uses `SharedString`.** Required; not removable. | — |
+| `summarizer` subtree (`summaryDelayLoadedModule` 28,215 + terser DCE of now-dead code) | **−38,759 B (implemented)** | ✅ **IMPLEMENTED.** Client-side summarization not needed (mobile summarizes server-side). Removed via the stub polyfill (PR #27611 stub + `NormalModuleReplacementPlugin`). Public-API names (`Summarizer`, …) preserved as throwing stubs. | Build-config opt-in (low) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
@@ -190,6 +194,48 @@ commits to never enabling it; if it does enable it, the stub throws immediately
 `await import()`" invariant is what keeps the swap runtime-safe and should be guarded
 by dependency tests in the consuming/host package (mirroring FF's summarizer
 dependency tests).
+
+### Excluding the summarizer (~38.8 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Implemented via the same stub-polyfill mechanism (this is the original
+"summarizer approach"; PRs #27611 stub + #27597 dependency tests). With the
+replacement active the single chunk drops from **585,184 → 546,425 B parsed**
+(−38,759) and **151,269 → 142,246 B gzip** (−9,023). The directly-removed
+`summaryDelayLoadedModule` subgraph is 28,215 B (`runningSummarizer` 13,057,
+`summaryGenerator` 5,792, `summarizer` 5,228, `summarizerHeuristics` 2,788,
+`runWhileConnectedCoordinator` 787, `summaryResultBuilder` 563); the remaining
+~10 KB is terser dead-code elimination of code that becomes unreachable once the
+summarizer implementation is gone, plus reduced module-concatenation overhead.
+
+**Why it is in the bundle at all.** The summarizer is already factored into a
+delay-loaded leaf module (`summary/summaryDelayLoadedModule/index.js`) that
+ContainerRuntime reaches only through `await import(...)` (containerRuntime.ts
+~line 2311). However, the implementation classes are **also part of the package's
+public API** — `summary/index.ts` value-re-exports `Summarizer`,
+`RunningSummarizer`, `RunWhileConnectedCoordinator`, `SummarizeHeuristicData`,
+`SummarizeHeuristicRunner`, `neverCancelledSummaryToken`, `defaultMaxAttempts`,
+`defaultMaxAttemptsForSubmitFailures` from the leaf module, and the package
+`index.ts` re-exports `Summarizer`/`neverCancelledSummaryToken`. Those value
+re-exports pin the subgraph into any bundle that touches the public API.
+
+**How the stub keeps the public API intact.** The stub
+(`summary/summaryDelayLoadedModuleStub.ts`, from PR #27611) re-exports the same
+value symbols: the classes are present but **throw on construction**
+(`unavailable(name)`), while the constants get their real values
+(`defaultMaxAttempts = 2`, `defaultMaxAttemptsForSubmitFailures = 5`,
+`neverCancelledSummaryToken`). Because `NormalModuleReplacementPlugin` redirects
+**every** import of `summaryDelayLoadedModule/index.js` — the `await import()` seam
+*and* the public-API value re-exports — to the stub, the real ~28 KB subgraph never
+enters the graph, yet `Summarizer` etc. remain exported (as throwing stubs). A
+compile-time spec (`test/summary/summaryDelayLoadedModuleStub.spec.ts`, PR #27611)
+asserts `requireAssignableTo` both directions so the stub's value exports stay in
+sync with the real module.
+
+**Safety / contract.** Appropriate for clients that summarize **server-side** and
+never instantiate a client summarizer. If such a client ever constructs the
+summarizer, the stub throws immediately (fail fast). PR #27597's dependency tests
+enforce that nothing outside the `await import()` seam takes a *runtime* dependency
+on the delay-loaded summarizer internals, keeping the swap runtime-safe.
 
 ### Research: where lz4js is used (~4,672 B)
 
