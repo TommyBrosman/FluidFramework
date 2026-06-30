@@ -274,7 +274,6 @@ import {
 	electedSummarizerBlobName,
 	type EnqueueSummarizeResult,
 	extractSummaryMetadataMessage,
-	formCreateSummarizerFn,
 	type IBaseSummarizeResult,
 	type IConnectableRuntime,
 	type IContainerRuntimeMetadata,
@@ -300,22 +299,19 @@ import {
 	type ISummaryConfiguration,
 	type ISummaryMetadataMessage,
 	metadataBlobName,
-	OrderedClientCollection,
-	OrderedClientElection,
 	recentBatchInfoBlobName,
 	RetriableSummaryError,
 	rootHasIsolatedChannels,
 	type SubmitSummaryResult,
 	type Summarizer,
-	SummarizerClientElection,
+	type SummarizerClientElection,
 	summarizerClientType,
 	summarizerRequestUrl,
 	SummaryCollection,
-	SummaryManager,
+	type SummaryManager,
 	validateSummaryHeuristicConfiguration,
 	wrapSummaryInChannelsTree,
 } from "./summary/index.js";
-import { Throttler, formExponentialFn } from "./throttler.js";
 
 /**
  * A {@link ContainerExtension}'s factory function as stored in extension map.
@@ -2327,91 +2323,43 @@ export class ContainerRuntime
 			);
 		} else if (
 			!onRequestMode &&
-			SummarizerClientElection.clientDetailsPermitElection(this.clientDetails)
+			// Inlined SummarizerClientElection.clientDetailsPermitElection so the gating condition does
+			// not statically reference the election machinery; that machinery is reached only through the
+			// dynamic import below, allowing it to be stubbed out of single-file bundles.
+			(this.clientDetails.capabilities.interactive ||
+				this.clientDetails.type === summarizerClientType)
 		) {
-			// Only create a SummaryManager and SummarizerClientElection
-			// if summaries are enabled and we are not the summarizer client.
-			const orderedClientLogger = createChildLogger({
-				logger: this.baseLogger,
-				namespace: "OrderedClientElection",
-			});
-			const orderedClientCollection = new OrderedClientCollection(
-				orderedClientLogger,
-				this.innerDeltaManager,
-				this._quorum,
+			// Only create a SummaryManager and SummarizerClientElection if summaries are enabled and we
+			// are not the summarizer client. This election / SummaryManager machinery is delay-loaded
+			// from a leaf module so it can be excluded (replaced with a no-op stub) from bundles for
+			// clients that do not summarize client-side.
+			const summaryManagerModule = await import(
+				// eslint-disable-next-line import-x/no-internal-modules -- intentionally importing the delay-loaded module directly so it can be code-split / stubbed
+				"./summary/summaryManagerDelayLoadedModule/index.js"
 			);
-			const orderedClientElectionForSummarizer = new OrderedClientElection(
-				orderedClientLogger,
-				orderedClientCollection,
-				this.electedSummarizerData ?? this.innerDeltaManager.lastSequenceNumber,
-				SummarizerClientElection.isClientEligible,
-				this.mc.config.getBoolean(
-					"Fluid.ContainerRuntime.OrderedClientElection.EnablePerformanceEvents",
-				),
-			);
-
-			this.summarizerClientElection = new SummarizerClientElection(
-				orderedClientLogger,
-				summaryCollection,
-				orderedClientElectionForSummarizer,
-				maxOpsSinceLastSummary,
-			);
-
-			const defaultAction = (): void => {
-				if (summaryCollection.opsSinceLastAck > maxOpsSinceLastSummary) {
-					this.mc.logger.sendTelemetryEvent({
-						eventName: "SummaryStatus:Behind",
-						opsWithoutSummary: summaryCollection.opsSinceLastAck,
-					});
-					// unregister default to no log on every op after falling behind
-					// and register summary ack handler to re-register this handler
-					// after successful summary
-					summaryCollection.once(MessageType.SummaryAck, () => {
-						this.mc.logger.sendTelemetryEvent({
-							eventName: "SummaryStatus:CaughtUp",
-						});
-						// we've caught up, so re-register the default action to monitor for
-						// falling behind, and unregister ourself
-						summaryCollection.on("default", defaultAction);
-					});
-					summaryCollection.off("default", defaultAction);
-				}
-			};
-
-			summaryCollection.on("default", defaultAction);
-
-			// Create the SummaryManager and mark the initial state
-			this.summaryManager = new SummaryManager(
-				this.summarizerClientElection,
-				this, // IConnectedState
-				summaryCollection,
-				this.baseLogger,
-				formCreateSummarizerFn(loader),
-				new Throttler(
-					60 * 1000, // 60 sec delay window
-					30 * 1000, // 30 sec max delay
-					// throttling function increases exponentially (0ms, 40ms, 80ms, 160ms, etc)
-					formExponentialFn({ coefficient: 20, initialDelay: 0 }),
-				),
-				{
-					initialDelayMs: initialSummarizerDelayMs,
-				},
-			);
-			// Forward events from SummaryManager
-			for (const eventName of [
-				"summarize",
-				"summarizeAllAttemptsFailed",
-				"summarizerStop",
-				"summarizerStart",
-				"summarizerStartupFailed",
-				"summarizeTimeout",
-			] as const) {
-				this.summaryManager.on(eventName, (...args: unknown[]) => {
-					this.emit(eventName, ...args);
-				});
-			}
-
-			this.summaryManager.start();
+			const { summaryManager, summarizerClientElection } =
+				summaryManagerModule.setupSummaryManager(
+					{
+						connectedState: this,
+						summaryCollection,
+						parentLogger: this.baseLogger,
+						telemetryLogger: this.mc.logger,
+						deltaManager: this.innerDeltaManager,
+						quorum: this._quorum,
+						electedSummarizerData: this.electedSummarizerData,
+						enablePerformanceEvents: this.mc.config.getBoolean(
+							"Fluid.ContainerRuntime.OrderedClientElection.EnablePerformanceEvents",
+						),
+						maxOpsSinceLastSummary,
+						initialSummarizerDelayMs,
+						loader,
+					},
+					(eventName: string, ...args: unknown[]) => {
+						this.emit(eventName, ...args);
+					},
+				);
+			this.summarizerClientElection = summarizerClientElection;
+			this.summaryManager = summaryManager;
 		}
 	}
 

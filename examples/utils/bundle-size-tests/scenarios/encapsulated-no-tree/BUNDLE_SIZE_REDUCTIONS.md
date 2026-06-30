@@ -41,6 +41,7 @@ for these Terser-minified bundles) for the single chunk
 | + id-compressor delay-load seam (no stub swap) | 618,397 B | 160,833 B |
 | **+ id-compressor stub polyfill** (`NormalModuleReplacementPlugin`) | **585,184 B** | **151,269 B** |
 | **+ summarizer stub polyfill** (`NormalModuleReplacementPlugin`) | **546,425 B** | **142,246 B** |
+| **+ summarizer-election stub polyfill** (`NormalModuleReplacementPlugin`) | **530,849 B** | **138,528 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -121,6 +122,7 @@ engineering. Ordered by size:
 |---|---:|---|---|
 | `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | ❌ **RESOLVED — app uses `SharedString`.** Required; not removable. | — |
 | `summarizer` subtree (`summaryDelayLoadedModule` 28,215 + terser DCE of now-dead code) | **−38,759 B (implemented)** | ✅ **IMPLEMENTED.** Client-side summarization not needed (mobile summarizes server-side). Removed via the stub polyfill (PR #27611 stub + `NormalModuleReplacementPlugin`). Public-API names (`Summarizer`, …) preserved as throwing stubs. | Build-config opt-in (low) |
+| `summarizer-election` machinery (`SummaryManager` + `OrderedClientElection` + `SummarizerClientElection` + terser DCE) | **−15,576 B (implemented)** | ✅ **IMPLEMENTED.** A client that summarizes server-side never participates in summarizer election, so the election + `SummaryManager` graph is dead weight. Extracted into a `summaryManagerDelayLoadedModule` leaf behind an `await import()`; the app swaps in a **no-op** `setupSummaryManager` stub via `NormalModuleReplacementPlugin`. Unlike the throwing stubs above, this path runs on every normal client, so the stub returns an empty result (== "does not elect"). See section below. | Build-config opt-in (low) |
 | `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
 | `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **−33,213 B (implemented)** | ✅ **IMPLEMENTED.** Off by default. Removed via the summarizer-style stub polyfill: a delay-loaded leaf module + `NormalModuleReplacementPlugin` swap to a throwing stub. True removal that holds in a single chunk. Apps that never enable id-compressor opt in via the webpack replacement. | Build-config opt-in (low) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
@@ -236,6 +238,49 @@ never instantiate a client summarizer. If such a client ever constructs the
 summarizer, the stub throws immediately (fail fast). PR #27597's dependency tests
 enforce that nothing outside the `await import()` seam takes a *runtime* dependency
 on the delay-loaded summarizer internals, keeping the swap runtime-safe.
+
+### Excluding the summarizer election / SummaryManager (~15.6 KB) from a single chunk — IMPLEMENTED
+
+**Result.** Single chunk drops from **546,425 → 530,849 B parsed** (−15,576) and
+**142,246 → 138,528 B gzip** (−3,718). The directly-removed classes are
+`SummaryManager` (~6.2 KB), `OrderedClientElection` + `OrderedClientCollection`
+(~5.9 KB) and `SummarizerClientElection` (~1.7 KB); the rest is terser DCE of code
+(e.g. `Throttler`/`formExponentialFn`, `formCreateSummarizerFn`) that becomes
+unreachable once the election graph is gone.
+
+**Why it needed a different stub flavor.** Unlike id-compressor and the summarizer
+implementation — which are only reached on an opt-in/summarizer-only path and can
+therefore be replaced with **throwing** stubs — the election branch runs on **every
+normal (non-summarizer) interactive client** during `initializeSummarizer`. A
+throwing stub would break ordinary clients. The election machinery is also **not
+part of the package's public API** (`index.ts` does not re-export `SummaryManager`,
+`OrderedClientElection`, etc.; only the `summary/index.ts` barrel and
+`containerRuntime.ts` referenced them), so the only thing pinning it was
+`containerRuntime.ts` itself.
+
+**How it is removed.** The election + `SummaryManager` construction/wiring was
+extracted verbatim into a delay-loaded leaf module
+(`summary/summaryManagerDelayLoadedModule/index.js`) exposing a single
+`setupSummaryManager(context, forwardEvent)` function that builds the collection /
+election / `SummaryManager`, registers the `default`-op listener, forwards lifecycle
+events, calls `.start()`, and returns `{ summaryManager, summarizerClientElection }`.
+`containerRuntime.ts` now reaches it **only** through `await import()` and holds
+every other reference as `type`-only (the gating check
+`SummarizerClientElection.clientDetailsPermitElection` was inlined to its one-line
+body so the condition does not statically reference the class). The app swaps the
+leaf for a **no-op** stub (`summary/summaryManagerDelayLoadedModuleStub.ts`) via
+`NormalModuleReplacementPlugin`; `setupSummaryManager` returns `{}`, which is
+behaviorally equivalent to "this client does not participate in summarizer
+election" — correct for a server-side-summarizing client whose summarizer
+implementation is itself stubbed. The result-type fields are optional so `{}`
+typechecks.
+
+**Safety / contract.** A compile-time spec
+(`test/summary/summaryManagerDelayLoadedModuleStub.spec.ts`) asserts
+`requireAssignableTo` both directions so the stub's value exports stay in sync with
+the real module. The full container-runtime suite (957 tests) passes unchanged — the
+tests exercise the *real* leaf, not the stub. Appropriate only for clients that do
+not summarize client-side.
 
 ### Research: where lz4js is used (~4,672 B)
 

@@ -131,6 +131,21 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of the client-side summarizer election / SummaryManager machinery. This client
+		// summarizes server-side and never participates in summarizer election, so the election +
+		// SummaryManager subgraph is dead weight. ContainerRuntime reaches it exclusively through a
+		// dynamic import of `./summary/summaryManagerDelayLoadedModule/index.js`. Replacing that leaf
+		// module with the no-op stub shipped by container-runtime drops the subgraph from the single
+		// chunk; the stub returns an empty result, equivalent to "this client does not elect".
+		new webpack.NormalModuleReplacementPlugin(
+			/summaryManagerDelayLoadedModule[\\/]index\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/summaryManagerDelayLoadedModule[\\/]index\.js$/,
+					"summaryManagerDelayLoadedModuleStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
