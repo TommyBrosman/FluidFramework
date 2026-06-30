@@ -17,14 +17,33 @@ Both sections are ordered **descending by reduction size**.
 
 | Milestone | Parsed | Gzip |
 |---|---:|---:|
-| Pre-session baseline | 1,019,378 B | ~270,000 B |
-| After all landed work (latest: `debug`→`minimalDebug`) | **955,980 B** | **253,452 B** |
-| **Total landed** | **−63,398 B (−6.22%)** | **~−16,500 B (−6.1%)** |
+| Pre-session baseline (single-chunk) | 1,019,378 B | ~270,000 B |
+| After dep/DCE work (latest: `debug`→`minimalDebug`), single-chunk total | 955,980 B | 253,452 B |
+| **Entry chunk** after enabling code-splitting (remove `maxChunks:1`) | **929,615 B** | **247,787 B** |
+| **Total landed (entry-chunk basis)** | **−89,763 B (−8.8%)** | **~−22,200 B (−8.2%)** |
 
+> ### Metric change: entry chunk vs single-chunk total
+> Earlier work measured a **single forced chunk** (the scenario pinned
+> `LimitChunkCountPlugin({ maxChunks: 1 })`). That over-counts initial download
+> size: the official Fluid metric (`getEntryStatsProcessor`) sums only an
+> entrypoint's *initial* assets, and the ship build (`webpack.config.cjs`) has no
+> chunk limit, so code behind `await import(...)` (e.g. the summarizer) ships as a
+> **separate async chunk** that is not part of initial download. Removing
+> `maxChunks:1` lets the summarizer split out:
+>
+> | | Parsed | Gzip |
+> |---|---:|---:|
+> | Entry chunk (initial download) | 929,615 B | 247,787 B |
+> | Async chunk `606.*.js` (summarizer, loaded only when client summarizes) | 28,805 B | 7,178 B |
+> | Total across both chunks | 958,420 B | — |
+>
+> All subsequent **lazy-load** reductions are measured against the **entry chunk**,
+> because moving conditional code into an async chunk reduces initial download even
+> though total bytes are merely deferred (not deleted).
+>
 > Note: the findings doc's "current" figure (968,720 B) predates the
 > shape-aware-chunker commit `1517e1b2b7` (−7,526 B) and the
-> `debug`→`minimalDebug` replacement (−5,010 B), the two most recent
-> landed reductions.
+> `debug`→`minimalDebug` replacement (−5,010 B).
 
 ---
 
