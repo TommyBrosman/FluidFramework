@@ -82,11 +82,17 @@ A true removal toward the target therefore requires one of:
 - **Dropping genuinely-unused API surface** the mobile app does not need (a
   consumer/scope decision about what `index.ts` must export).
 
-Reaching −266,260 B on non-tree FF core via true removals alone is very likely
-**infeasible**: the largest non-tree blocks (`merge-tree`+`sequence` ≈ 133 KB) are
-required by `SharedString`. If the mobile app uses `SharedString`, that code is
-required and cannot be removed; if it does not, the removal is a consumer-side
-API-surface trim, not a core change. This is the gating decision for the user.
+Reaching −266,260 B on non-tree FF core via true removals alone is **infeasible**.
+The app **confirms it uses `SharedString` and `SharedDirectory`** (and every other
+`index.ts` export), so the two largest non-tree blocks — `merge-tree`+`sequence`
+(≈133 KB) and `map` (≈36 KB) — are **required code** and off the table. The only
+remaining true-removal candidates are the id-compressor subtree (≈33.6 KB, gated on
+a build-time opt-out decision), the `SharedMap` aqueduct back-compat registration
+(≈9.5 KB, **open compat question**), and `lz4js` (≈4.7 KB, required on the inbound
+op path). Even all three together (~48 KB) plus the landed dep-swaps (~18 KB) reach
+only ~66 KB — about a quarter of the 266 KB target. **The target is not reachable
+on non-tree FF code while preserving the app's required API surface.** See the
+true-removal ledger and research notes below.
 
 ### True-removal ledger (single chunk, non-tree) — needs decisions
 
@@ -95,17 +101,106 @@ engineering. Ordered by size:
 
 | Lever | True-removal size | Gating decision | Risk |
 |---|---:|---|---|
-| `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | Does the mobile app use `SharedString`? If no → drop the export from `index.ts`. | Consumer API-surface |
-| `SharedDirectory` (pulls `map`) | **~35,738 B** | Does the app use `SharedDirectory`/`SharedMap`? | Consumer API-surface |
-| `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **~33,496 B** | Strip via build-time DefinePlugin-gated DCE? id-compressor is off by default; the code comment itself flags the bundle cost. Changes the runtime-enable contract. | Core build-flag (medium) |
-| `SharedMap` aqueduct back-compat registration | **~9,506 B** | Are pre-0.10 SharedMap-DataObject documents still in scope? If no → delete the registration. | Compat (load-bearing) |
-| `lz4js` (`OpCompressor`/`OpDecompressor`) | **~4,672 B** | Op compression — decompressor is on the inbound hot path; can it be dropped if the app never sends compressed ops? | Core hot-path |
-| Re-include + shrink `tree` | (the only other 130 KB+ block) | Was excluded by an earlier instruction; revisit if the target requires it. | Scope |
+| `SharedString` / `createOverlappingIntervalsIndex` (pulls `merge-tree` 92,732 + `sequence` 40,005) | **~132,737 B** | ❌ **RESOLVED — app uses `SharedString`.** Required; not removable. | — |
+| `SharedDirectory` (pulls `map`) | **~35,738 B** | ❌ **RESOLVED — app uses `SharedDirectory`.** Required; not removable. | — |
+| `id-compressor` subtree (id-compressor 17,954 + sorted-btree 15,542) | **~33,634 B (measured)** | ⚠️ **MAYBE.** Off by default. Cannot be removed by the summarizer pattern in a single chunk (see research below); needs a build-time opt-out (DefinePlugin DCE) or dependency-injection. Changes the enable contract. | Core build-flag (medium) |
+| `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
+| `lz4js` (`OpDecompressor` inbound + `OpCompressor` outbound) | **~4,672 B** | See research below — `decompress` is genuinely required on the inbound path (any client may receive compressed ops). | Core hot-path |
+| Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
 
-**Safe unilateral true removals are exhausted at the ≈18 KB of dep-swaps already
-landed** (npm-polyfill replacement complete; `importHelpers` yields 0 on the
-remaining in-bundle packages — their esnext output emits no inlined tslib
-helpers). Any further material reduction requires one of the decisions above.
+> **Note re: index.ts.** All exports in `src/index.ts` are confirmed in use by the
+> app, so the scenario's API surface is representative and will not be trimmed.
+> `SharedString`/`SharedDirectory` (the two largest blocks, ~168 KB combined) are
+> therefore **required code** — they are not reduction candidates.
+
+### Research: excluding id-compressor (~33,634 B) from a single chunk
+
+**Empirically measured.** Stubbing out the four id-compressor value functions in
+`containerRuntime.ts` (the only live references — see below) drops the single
+chunk from **617,974 → 584,340 B parsed** (−33,634) and **160,775 → 150,934 B
+gzip** (−9,841). The removed bytes are the id-compressor module (17,954) + its
+sole non-tree dependency `@tylerbu/sorted-btree-es6` (15,542) + a few hundred
+bytes of telemetry-utils helpers (`createSampledLogger`/`toITelemetryLoggerExt`)
+used only by the compressor closure.
+
+**Why it is in the bundle at all.** Every importer of `@fluidframework/id-compressor`
+in the in-bundle packages is `import type` (erased) **except**
+`containerRuntime.ts`, which value-imports `createIdCompressor` / `createSessionId`
+/ `deserializeIdCompressor` / `toIdCompressorWithCore`. Those are referenced inside
+`createIdCompressorFn`, which is **always constructed and passed to the
+`ContainerRuntime` constructor** (even when id-compressor is disabled). That live
+reference is what pins the subtree. The id-compressor package is already
+`sideEffects: false`, so the moment the reference is gone it tree-shakes out
+cleanly — which is exactly what the stub experiment confirmed.
+
+**Why the summarizer pattern does NOT work here (for a single chunk).** The
+summarizer is dynamically `import()`-ed from a segregated module
+(`summary/summaryDelayLoadedModule/index.js`) so a bundler can split it into its
+own lazily-loaded chunk. That removes it from the **initial** chunk only — in a
+**single-chunk** build, `LimitChunkCountPlugin({ maxChunks: 1 })` merges the split
+chunk straight back in. Verified directly: the `Summarizer` class **is present in
+the single-chunk bundle**. The earlier id-compressor lazy-load (`6bde337df1`,
+reverted) had the same fate and even added ~3.4 KB of chunk-wrapper overhead.
+**Deferral cannot remove bytes from a single chunk; only a true exclusion can.**
+
+**What a true single-chunk exclusion requires.** The consumer must commit *at
+build time* that it will never enable id-compressor, so the static reference can be
+eliminated and the module tree-shaken. Two viable mechanisms:
+
+1. **Build-time constant + guarded factory (DefinePlugin DCE).** Gate the
+   `createIdCompressorFn` body (and thus the four imports) behind a build-time
+   boolean, e.g. `declare const FLUID_NO_ID_COMPRESSOR: boolean;` …
+   `const createIdCompressorFn = FLUID_NO_ID_COMPRESSOR ? undefined : () => { … }`.
+   With the consumer's bundler defining `FLUID_NO_ID_COMPRESSOR = true`, terser
+   evaluates the ternary, DCEs the closure (the only references), webpack drops the
+   now-unreferenced static import, and the `sideEffects:false` module is
+   tree-shaken — yielding the measured −33,634 B. At runtime, attempting to enable
+   id-compressor with the flag set must `throw` (fail fast). This is the *least
+   invasive* option: one build flag, one guarded factory, one throw. It mirrors how
+   `process.env.NODE_ENV === "production"` DCE already strips dev-only code in this
+   very bundle. **Cost:** introduces and documents a public build-time switch;
+   default (flag unset) keeps current behavior, so it is non-breaking.
+
+2. **Dependency injection (inversion).** Remove the id-compressor factory from core
+   entirely; the consumer passes a factory (or the four functions) via
+   `runtimeOptions`/the load call. Core then has *zero* static reference, so
+   id-compressor is bundled only by apps that actually wire it in. Architecturally
+   cleanest and needs no bundler cooperation, but it is a larger public-API change
+   (new option, migration for existing enable-via-`enableRuntimeIdCompressor`
+   consumers) and warrants FF API-council review.
+
+**Recommendation:** Option 1 is the pragmatic path for the mobile target — small,
+local, non-breaking by default, and validated to deliver the full ~33.6 KB. It
+should be raised with the container-runtime owners since it adds a supported
+build-time contract. (Not implemented here pending that decision.)
+
+### Research: where lz4js is used (~4,672 B)
+
+`lz4js` enters the bundle through **two** static imports in container-runtime's
+`opLifecycle/`:
+
+- `opCompressor.ts` → `import { compress } from "lz4js"` — **outbound** op
+  compression. `OpCompressor` is constructed unconditionally in the
+  `ContainerRuntime` constructor (`containerRuntime.ts:2051`). Compression only
+  *fires* when the session schema enables lz4 and a batch exceeds
+  `minimumBatchSizeInBytes` (the `2.0.0-defaults` config sets this to 614,400 B ≈
+  600 KB; the disabled config sets it to `+Infinity`). So `compress` is rarely
+  *called*, but the code is always *present*.
+- `opDecompressor.ts` → `import { decompress } from "lz4js"` — **inbound** op
+  decompression. `OpDecompressor` is also constructed unconditionally
+  (`containerRuntime.ts:1822`) and runs on the **inbound op hot path**: when a
+  received message has `compression === CompressionAlgorithms.lz4`, it must
+  `decompress` it.
+
+**Why it is hard to remove.** `decompress` is not optional for correctness: a
+client can receive compressed ops authored by *other* clients (or by its own
+earlier session) regardless of whether *this* client ever compresses. Dropping
+`decompress` would break reading those ops. So even an app that never compresses
+outbound must retain the decompressor. A true removal would require a guarantee
+that the document/session never contains lz4-compressed ops — a
+collaboration-wide invariant, not a local build choice — which is why this is
+classified core hot-path and left as-is. (The `attributor` and a driver-utils
+summary-blob adapter also use lz4, but those are not in this scenario's graph.)
 
 ---
 
@@ -168,7 +263,7 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 
 | Reduction | Approx. impact (parsed) | LOE | Status / notes |
 |---|---:|---|---|
-| **`SharedMap` back-compat in `aqueduct` `DataObjectFactory`** — `dataObjectFactory.ts:84` unconditionally does `sharedObjects.push(SharedMap.getFactory())` (guarded only by `factory.type === MapFactory.Type`), statically pulling `map.js` + `mapKernel.js`. | **9,506 B** (1,901 `map.js` + 7,305 `mapKernel.js` + 300 transitive) — paid by **every `DataObject` consumer**, not just this scenario | **Medium / blocked-compat** | **Verified via `analyzeReasons --root dds/map/lib/map.js`: 9,506 B unique subtree, reachable *only* through this registration.** The package's own `// TODO: Remove SharedMap factory when compatibility with SharedMap DataObject is no longer needed in 0.10` flags it. Load-bearing: removing it breaks loading documents whose root DataObject persisted a `SharedMap` channel. Needs an owner/compat decision (are pre-0.10 SharedMap-DataObject documents still in scope?), so it is **not** a safe surgical bundle-only change. Lazy-loading the factory yields **0 B** here (single-chunk merge). |
+| **`SharedMap` back-compat in `aqueduct` `DataObjectFactory`** — `dataObjectFactory.ts:84` unconditionally does `sharedObjects.push(SharedMap.getFactory())` (guarded only by `factory.type === MapFactory.Type`), statically pulling `map.js` + `mapKernel.js`. | **9,506 B** (1,901 `map.js` + 7,305 `mapKernel.js` + 300 transitive) — paid by **every `DataObject` consumer**, not just this scenario | **Medium / blocked-compat** | **Verified via `analyzeReasons --root dds/map/lib/map.js`: 9,506 B unique subtree, reachable *only* through this registration.** The package's own `// TODO: Remove SharedMap factory when compatibility with SharedMap DataObject is no longer needed in 0.10` flags it. Load-bearing: removing it breaks loading documents whose root DataObject persisted a `SharedMap` channel. Needs an owner/compat decision (are pre-0.10 SharedMap-DataObject documents still in scope?), so it is **not** a safe surgical bundle-only change. **⚠️ OPEN QUESTION — left unresolved per user; the app owner is unsure whether pre-0.10 SharedMap-DataObject documents are still in scope.** Lazy-loading the factory yields **0 B** here (single-chunk merge); only outright deletion removes the bytes. |
 | **Read-only checkout entrypoint** — split `TreeCheckout` so a variant omits `defaultEditBuilder`, dropping the entire write pillar (`sequence-field` + `modularChangeFamily` + `optional-field`). | up to **~70 KB** (read-only consumers only; **0** for read+write) | **Very high** | Surfaced by per-API analysis, **not yet attempted**. Architectural: `TreeCheckout` must expose `editor`/`transaction`/`applyChange` only on the editing variant. Single clean cut point (one import edge). |
 | **`SchemaFactory.array`/`.map` prototype detach (#6)** — make array/map node-kind infra opt-in. | **−11,044** ceiling / −2,830 gzip; **0** if the consumer uses any of `array`/`map`/`arrayRecursive`/`mapRecursive` | **Medium** | Stub-measured. This scenario uses both array and map, so saving here is 0 — documented as the upper bound for asymmetric consumers. |
 | **Closed-kind-set `ModularChangeFamily` monomorphization** — replace runtime `getFieldKind` map dispatch with a build-time closed set so terser can resolve handlers statically. | **~10 KB** ceiling | **Very high** | Research-grade. Correctness, layer-compat, and persisted-format implications. |
