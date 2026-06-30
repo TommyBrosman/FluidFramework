@@ -22,21 +22,28 @@ Both sections are ordered **descending by reduction size**.
 > for the current target — they shrank tree code that is no longer in the bundle.
 > They are retained for the historical record only.
 
-### Ground-truth no-tree measurements (entry chunk)
+### Ground-truth no-tree measurements (single chunk)
+
+> **Metric: single-chunk total bytes.** The consuming target is a **MOBILE app
+> bundle**, which ships as a single chunk. Deferring code into separate async
+> chunks (`await import(...)` / code-splitting) saves **nothing** — every byte
+> still ships in the one download. Therefore **only TRUE removals count**;
+> lazy-loading required functionality does not. The scenario pins
+> `LimitChunkCountPlugin({ maxChunks: 1 })` so the measured bundle is one chunk.
 
 All figures are **parsed = file size** (source-map-explorer total == `stat -c%s`
-for these Terser-minified bundles) for the entry chunk
-`build/scenarios/encapsulated-no-tree/encapsulated-no-tree.js`, with
-code-splitting enabled (no `LimitChunkCountPlugin`).
+for these Terser-minified bundles) for the single chunk
+`build/scenarios/encapsulated-no-tree/encapsulated-no-tree.js`.
 
-| Milestone | Entry parsed | Entry gzip |
+| Milestone | Parsed | Gzip |
 |---|---:|---:|
-| No-tree baseline, all dep-swaps applied, before id-compressor lazy-load | 591,600 B | 155,166 B |
-| **After id-compressor lazy-load (`6bde337df1`)** | **558,425 B** | **145,563 B** |
+| **No-tree single chunk, all dep-swaps applied** (`135357c859`) | **617,974 B** | **160,775 B** |
 
-Async chunks (loaded only when the corresponding feature is used; **not** part
-of initial download): `606.*` summarizer 28,796 B; `480.*` + `183.*`
-id-compressor 18,390 + 15,732 B. Total across all chunks: 621,343 B parsed.
+> An earlier exploration lazy-loaded id-compressor (`6bde337df1`) to shrink the
+> *entry* chunk, but that metric is irrelevant for a single-chunk mobile bundle:
+> the deferred bytes still ship, and chunk-splitting overhead made the total
+> *larger* (split total 621,343 B vs single-chunk 617,974 B). It was reverted in
+> `135357c859`.
 
 ### Target (from real FF 2.80.0 consumer bundle)
 
@@ -54,18 +61,32 @@ The harness measures **absolute byte deltas** that transfer to the consumer for
 shared core code; it does not reproduce the consumer's absolute number (their
 app uses a narrower API slice plus 2.80→2.101 drift).
 
-### Honest ceiling (non-tree, in-scope)
+### Honest ceiling (non-tree, true removals only)
 
-Landed in-scope reductions total **≈ −51 KB entry parsed** (18,062 dep-swaps +
-33,175 id-compressor lazy-load). The remaining entry chunk (558,425 B) is
-dominated by code that loads **unconditionally** on the core hot path:
+Under the single-chunk / true-removals-only rule, the only landed wins are the
+**dep-swaps (≈ −18 KB)** — npm polyfills genuinely replaced by smaller in-tree
+code. Code-splitting / lazy-loading (id-compressor, summarizer) is **disqualified**:
+it defers bytes that still ship in the single chunk.
+
+The remaining 617,974 B is dominated by code that is **genuinely reachable** from
+the scenario's API surface and cannot be deferred away:
 `merge-tree` (92,732) + `sequence` (40,005) pulled by `SharedString`,
 `container-runtime` core (~150 KB), `container-loader` (~103 KB), `map` (~36 KB).
-Closing the remaining ~150 KB gap to 407,532 B is **not achievable on non-tree
-FF core alone** — it requires either (a) deferring `SharedString`/`merge-tree`
-via DDS lazy-registration (a consumer/app concern, not a core change) or (b)
-re-including and shrinking tree (explicitly excluded by the current scope). This
-is the gating decision for the user.
+
+A true removal toward the target therefore requires one of:
+- **Dead-code elimination** terser can't do automatically (back-compat shims
+  behind effectively-constant conditions, e.g. the `SharedMap` aqueduct
+  registration ≈ 9.5 KB);
+- **Lighter reimplementation** of a heavy subsystem (the dep-swap pattern, but
+  applied to first-party code);
+- **Dropping genuinely-unused API surface** the mobile app does not need (a
+  consumer/scope decision about what `index.ts` must export).
+
+Reaching −266,260 B on non-tree FF core via true removals alone is very likely
+**infeasible**: the largest non-tree blocks (`merge-tree`+`sequence` ≈ 133 KB) are
+required by `SharedString`. If the mobile app uses `SharedString`, that code is
+required and cannot be removed; if it does not, the removal is a consumer-side
+API-surface trim, not a core change. This is the gating decision for the user.
 
 ---
 
@@ -77,7 +98,6 @@ time each change landed, against this scenario's bundle.
 
 | # | Commit | Change | Parsed Δ | Gzip Δ |
 |---|--------|--------|---------:|-------:|
-| 0 | `6bde337df1` | **Lazy-load id-compressor implementation (no-tree, IN SCOPE)** — move the four value imports (`createIdCompressor`/`createSessionId`/`deserializeIdCompressor`/`toIdCompressorWithCore`) from a static import to an `await import()` in the async `loadRuntime2` path, taken only when id-compressor is enabled (off by default). The module resolves before any synchronous compressor construction, preserving the documented sync-init requirement. Code moves to async chunks `480.*`+`183.*`. **Re-measured against the no-tree entry chunk.** | **−33,175** | **−9,603** |
 | 1 | `f39c28c357` | **TypeBox barrel-import rewrite** _(tree-only — OUT OF SCOPE now tree removed)_ — replace `import { Type }` (namespace object, defeats `usedExports`) with named imports of the specific kinds; reconstruct a local `const Type = {…}` so call sites are unchanged. 35 `dds/tree` files. TypeBox: 39,283 → 12,580 B (−68%). | **−25,764** | **−5,541** |
 | 2 | `a636e62391` | **`importHelpers` + `tslib` — `dds/tree` only** _(tree-only — OUT OF SCOPE)_. Stops `tsc` emitting `__classPrivateFieldGet/Set` / `__esDecorate` / `__runInitializers` inline per file (12–16× duplicated, un-dedupable by `concatenateModules`). 17 `dds/tree` modules collapse to one `tslib` import. | **−9,466** | −621 |
 | 3 | `1517e1b2b7` | **Skip shape-aware chunker on default-policy path** _(tree-only — OUT OF SCOPE)_ — add `basicOnlyChunkField`/`basicOnlyChunkTree` (policy-free, `BasicChunk`-only) and route the 4 default-policy callers through them. DCEs `uniformChunk.ts` (5,908 → 0 B) + the `Chunker`/shape-inference surface. | **−7,526** | −3,176 |
@@ -144,14 +164,23 @@ unless noted; several have a much larger ceiling for asymmetric consumers
 | **`sequence-field` codec V2+V3 pin at build time** — currently both kept for runtime `ClientVersionDispatching`. | **~4.7 KB** | **Medium** | Requires pinning the wire-codec version at build time instead of `MinimumVersionForCollab` runtime selection. |
 | **`ModularChangeFamily` private-method hoist (#8)** | **−1,553** / −204 gzip | **Medium** | Stub-measured; net well below the churn cost (39-method refactor across a 3.2K-line file, loss of `private` encapsulation). |
 
-### Scenario-level lever (LANDED)
+### Scenario-level lever (REVERTED — single chunk restored)
 
-- **Dropped `LimitChunkCountPlugin({ maxChunks: 1 })`** — the summarizer
-  cluster (~28.8 KB, already factored as `summaryDelayLoadedModule/*`) and the
-  lazy id-compressor now ship as **separate async chunks** instead of being
-  force-merged into the initial chunk. This is what makes the entry-chunk
-  metric meaningful and is a prerequisite for the id-compressor lazy-load (row
-  0). See `webpack.config.cts` line 91.
+- **`LimitChunkCountPlugin({ maxChunks: 1 })` is restored** (`135357c859`). The
+  mobile target ships a single chunk, so code-splitting saves nothing: the
+  summarizer (~28.8 KB) and any `await import()` code are merged back into the one
+  measured chunk. This is intentional — it makes the measurement reflect total
+  shipped bytes and prevents deferral from masquerading as a reduction.
+
+### DISQUALIFIED under single-chunk / true-removals-only
+
+The following candidates above are **deferral, not removal**, and therefore yield
+**0 B** for a single-chunk mobile bundle: `schemaCompatibilityTester` defer,
+`lz4js` lazy-load, `chunked-forest/codec` separation (if implemented via dynamic
+import), and the reverted id-compressor lazy-load. They are retained only for the
+web/multi-chunk case. **The leading non-tree TRUE-removal candidate is the
+`SharedMap` aqueduct back-compat registration (≈9.5 KB)** — deleting it (not
+lazy-loading it) genuinely removes bytes, pending the compat decision noted above.
 
 ### Hard pass (documented, not worth pursuing)
 
@@ -170,10 +199,12 @@ are all either tree-owned or genuinely-used core:
   are eagerly constructed on the op hot path.
 - `tslib` (1.9 KB) — intentionally shared via `importHelpers`.
 - `semver-ts` (0.8 KB) — pinned by `dds/tree`.
-- `id-compressor` (~18 KB) — **DONE (`6bde337df1`, −33,175 B entry).** Now
-  lazy-loaded via `await import()` in `loadRuntime2`, taken only when
-  id-compressor is enabled (off by default). With `LimitChunkCountPlugin`
-  removed, the split chunk stays out of the entry chunk. See row 0 above.
+- `id-compressor` (~18 KB) — statically imported, only constructed when enabled
+  (off by default). **Lazy-loading does NOT count** under the single-chunk mobile
+  metric: the deferred bytes still ship, and the split overhead made the total
+  *larger*. The reverted experiment is `6bde337df1` / `135357c859`. A TRUE removal
+  would require excluding it from the bundle entirely when unused (a build-time /
+  API decision the consumer makes), which is out of scope for an FF-core change.
 
 Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 `container.ts` 29.8 KB, `channelCollection.ts`, `dataStoreContext.ts`,
