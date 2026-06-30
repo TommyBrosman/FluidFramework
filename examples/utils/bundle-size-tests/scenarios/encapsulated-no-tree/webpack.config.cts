@@ -33,7 +33,7 @@ import { BundleComparisonPlugin } from "@mixer/webpack-bundle-compare/dist/plugi
 import TerserPlugin from "terser-webpack-plugin";
 import { default as webpack } from "webpack";
 
-const bundleName = "encapsulated-with-shared-tree.js";
+const bundleName = "encapsulated-no-tree.js";
 
 // Package root for bundle-size-tests (two levels up from this scenario directory).
 // `bundleStats.msp.gz` is written here so collectBundle.ts can pick it up at the
@@ -85,7 +85,7 @@ const config: webpack.Configuration = {
 			name: "encapsulatedWithSharedTree",
 			type: "jsonp",
 		},
-		path: path.resolve(__dirname, "../../build/scenarios/encapsulated-with-shared-tree"),
+		path: path.resolve(__dirname, "../../build/scenarios/encapsulated-no-tree"),
 	},
 	plugins: [
 		// NOTE: `LimitChunkCountPlugin({ maxChunks: 1 })` was intentionally removed.

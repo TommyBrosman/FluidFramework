@@ -352,7 +352,7 @@ class CollectBundleCommand extends Command {
 		"<%= config.bin %> <%= command.id %>",
 		"<%= config.bin %> <%= command.id %> --mode revision --revision main",
 		"<%= config.bin %> <%= command.id %> --mode revision --revision v2.20.0",
-		"<%= config.bin %> <%= command.id %> --scenario encapsulated-with-shared-tree",
+		"<%= config.bin %> <%= command.id %> --scenario encapsulated-no-tree",
 	];
 
 	public static override readonly flags = {

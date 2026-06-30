@@ -120,12 +120,3 @@ export {
 	type ITelemetryLoggerExt,
 	createChildLogger,
 } from "@fluidframework/telemetry-utils/legacy";
-
-export {
-	type ImplicitFieldSchema,
-	type ITree,
-	type TreeView,
-	SchemaFactory,
-	SharedTree,
-	TreeViewConfiguration,
-} from "@fluidframework/tree/legacy";

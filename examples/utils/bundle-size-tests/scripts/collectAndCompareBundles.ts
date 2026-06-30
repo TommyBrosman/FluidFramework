@@ -88,7 +88,7 @@ class CollectAndCompareBundlesCommand extends Command {
 		"<%= config.bin %> <%= command.id %>",
 		"<%= config.bin %> <%= command.id %> --base-revision main",
 		"<%= config.bin %> <%= command.id %> --base-revision v2.20.0",
-		"<%= config.bin %> <%= command.id %> --scenario encapsulated-with-shared-tree",
+		"<%= config.bin %> <%= command.id %> --scenario encapsulated-no-tree",
 		"<%= config.bin %> <%= command.id %> --force-clean-build --skip-compare",
 	];
 

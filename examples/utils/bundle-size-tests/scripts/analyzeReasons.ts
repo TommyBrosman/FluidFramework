@@ -75,7 +75,7 @@ interface CliFlags {
 
 function parseFlags(): CliFlags {
 	const argv = process.argv.slice(2);
-	let scenario = "encapsulated-with-shared-tree";
+	let scenario = "encapsulated-no-tree";
 	let outPath: string | undefined;
 	let cutoff = 0;
 	let root: string | undefined;
