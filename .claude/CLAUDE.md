@@ -10,6 +10,21 @@ When writing asserts (from `@fluidframework/core-utils`), use a string literal f
 
 API report files are **generated artifacts** — never hand-edit them. If they need updating, rebuild and regenerate via `build:api-reports`. If you are working in `@fluidframework/tree` or its aggregator (`fluid-framework`) and encounter unexpected API report diffs, read `.claude/skills/ci-readiness-check/tree-api-checks.md` before attempting to fix them.
 
+## Bundle-size stub-polyfills (`encapsulated-no-tree` scenario)
+
+When adding, removing, or changing a stub-polyfill for the
+`examples/utils/bundle-size-tests/scenarios/encapsulated-no-tree` bundle (the
+`NormalModuleReplacementPlugin` swaps in `webpack.config.cts`), **always update
+`examples/utils/bundle-size-tests/scenarios/encapsulated-no-tree/POLYFILL_VALIDITY.md`**
+in the same change. Keep these parts in sync with the new stub:
+
+- Add a per-polyfill validity subsection (§1) — stub shape (throwing vs
+  no-op/valid-empty), the code-flow gate with `containerRuntime.ts` line numbers,
+  and the imported-API argument.
+- Add the stub id + real→stub mapping to `tools/polyfill-swap.sh` (the `MAP`
+  array) and to the expected-exclusion-set table (§2.4).
+- Update the dependency chain (§3) if the new stub depends on or enables another.
+
 ## Azure DevOps
 
 The ADO project for work items and pipelines is **`internal`** (not `FluidFramework`).

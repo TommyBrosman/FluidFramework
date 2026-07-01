@@ -23,6 +23,12 @@ All line numbers reference `packages/runtime/container-runtime/src/containerRunt
 on the `tbrosman/claude-shrink-bundle` branch unless otherwise noted. Re-verify
 with `grep -n` before relying on an exact number — the file changes often.
 
+> **Maintenance:** This document must be updated whenever a stub-polyfill is
+> added, removed, or changed. In the same change, add/update the per-polyfill
+> validity subsection (§1), the `tools/polyfill-swap.sh` `MAP` entry and the
+> exclusion-set table (§2.4), and the dependency chain (§3). This is also recorded
+> as an agent instruction in `.github/copilot-instructions.md` / `.claude/CLAUDE.md`.
+
 ---
 
 ## 0. The two stub shapes
