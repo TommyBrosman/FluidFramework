@@ -280,6 +280,33 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
 
 ---
 
+### 1.8 summary-internals — `summary/summaryInternals.js` → `summaryInternalsStub.js`
+
+- **Shape:** **throwing** — every export (`summarizeInternalCore`, `summarizeCore`,
+  `submitSummaryCore`, `refreshLatestSummaryAckCore`) throws
+  `"summaryInternals is stubbed out in this build"`; `ISummaryInternalsHost` is re-exported
+  as `unknown` (type-only, erased).
+- **Unlike §1.1-1.7, this is not a delay-load boundary stub.** The summary-write
+  implementation lived as prototype methods on the always-constructed `ContainerRuntime`
+  class (`containerRuntime.ts`), so it could not tree-shake. The lever *extracts* those six
+  method bodies into this leaf module (free functions taking a structural `host` view of the
+  runtime) purely to create a severable module boundary; `ContainerRuntime` keeps four thin
+  delegators (`submitSummary`, `refreshLatestSummaryAck`, `summarize`, `summarizeInternal`)
+  that call the extracted `*Core` functions via `this as unknown as ISummaryInternalsHost`.
+- **Gate:** the four delegators are reachable on the class, but are only ever invoked through
+  the `ISummarizerInternalsProvider` interface (`submitSummary` /
+  `refreshLatestSummaryAck`) and the summarizerNode factory closure (`summarizeInternal`) —
+  all of which run **only** on the delay-loaded client-side `Summarizer` (§1.2). A client
+  that summarizes server-side never reaches them, so the throws are unreachable in this
+  bundle.
+- **Why the target client never trips the throws:** the sole caller of the summary-write
+  path is the `Summarizer`, which is itself stubbed (§1.2) and throws before it can drive a
+  summary. `maxChunks:1` means the static import + this stub — not the delay-load seam alone
+  — is what excludes the code.
+- **Enabled by §1.2.** See §3.
+
+---
+
 ## 2. Determining which tests break under a polyfill
 
 ### 2.1 The method
@@ -304,13 +331,13 @@ tools/polyfill-swap.sh list                 # print the stub-id -> (real,stub) t
 tools/polyfill-swap.sh baseline             # control run: REAL modules
 tools/polyfill-swap.sh gc                    # run suite with the gc stub swapped in
 tools/polyfill-swap.sh summarizer gc         # multiple stubs at once
-tools/polyfill-swap.sh all                   # all 7 stubs (the shipped bundle's module set)
+tools/polyfill-swap.sh all                   # all 8 stubs (the shipped bundle's module set)
 ```
 
 It backs up each real module, copies the stub over it, runs `npx mocha`, and
 **always restores** on exit (including Ctrl-C). Stub ids:
 `id-compressor summarizer election blob-manager gc summarizer-node
-summary-collection`.
+summary-collection summary-internals`.
 
 ### 2.3 Interpreting results — two buckets
 
@@ -346,6 +373,7 @@ map directly to each stubbed subsystem's own specs. Non-exhaustive:
 | gc | `gc/*` collect/sweep/tombstone specs |
 | summarizer-node | `summarizerNode` summarize/GC-data specs (child-map lifecycle stays green) |
 | summary-collection | `summaryCollection` watcher / ack specs |
+| summary-internals | `submitSummary` / `refreshLatestSummaryAck` / `summarize` and pending-ops summary specs (the summary-write path; all throw under the stub) |
 
 Any failure **outside** the corresponding row is a red flag (see §2.3).
 
@@ -378,9 +406,14 @@ Root A: "client summarizes SERVER-SIDE; never elected summarizer"
    │      │                   [throwing summarize/getGCData require BOTH:
    │      │                    summarizer stubbed (1.2) AND GC disabled (1.5)]
    │      │
-   │      └─► (1.7) summary-collection stub
-   │                [throwing createWatcher/waitSummaryAck require BOTH consumers
-   │                 stubbed: Summarizer (1.2) AND election SummaryManager (1.3)]
+   │      ├─► (1.7) summary-collection stub
+   │      │        [throwing createWatcher/waitSummaryAck require BOTH consumers
+   │      │         stubbed: Summarizer (1.2) AND election SummaryManager (1.3)]
+   │      │
+   │      └─► (1.8) summary-internals stub
+   │                [throwing submitSummary/refreshLatestSummaryAck/summarize path;
+   │                 reachable only through the delay-loaded Summarizer (1.2), so
+   │                 the extracted summary-write code is dead once (1.2) is stubbed]
    │
    └─► (1.3) election stub             [no-op; interactive non-summarizer clients DO
                                         enter the gate L2324 (effective gate:

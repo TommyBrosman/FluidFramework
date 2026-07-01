@@ -233,6 +233,23 @@ const config: webpack.Configuration = {
 				resource.request = resource.request.replace(/mapFactory\.js$/, "mapFactoryStub.js");
 			},
 		),
+		// TRUE removal of the summary-write implementation (`summaryInternals.ts`). `ContainerRuntime`
+		// implements the `ISummarizerInternalsProvider` summary-write path (`submitSummary` /
+		// `refreshLatestSummaryAck` and the `summarize` helpers) by delegating to free functions in
+		// `summaryInternals.js`. Those functions run only on a client that summarizes client-side; this
+		// bundle summarizes server-side (its `Summarizer` is already stubbed), so the summary-write path
+		// is never reached. Because `maxChunks:1` forces a single chunk, the delay-loaded seam alone does
+		// not exclude it — replacing the module with the throwing stub is what drops the (large)
+		// summary-generation code. The "Stub" infix keeps this regex from matching the replacement module.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]summaryInternals\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/summaryInternals\.js$/,
+					"summaryInternalsStub.js",
+				);
+			},
+		),
 		// NOTE: batch-size telemetry (`batchTracker.js`) and the per-DDS sampled-telemetry helper
 		// (`sampledTelemetryHelper.js`) are intentionally NOT stubbed — see the telemetry note above.
 		// Mirrors the DefinePlugin constants used by the external ship build so

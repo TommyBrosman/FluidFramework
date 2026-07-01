@@ -396,6 +396,80 @@ that introduces a seam).
   stubbed bundle and drives SharedDirectory/SharedString ops, asserting the stub's throw
   paths are never hit.
 
+### F25 — ContainerRuntime summary-write cluster (client-side summary generation)
+
+> Not accidental coupling like F24 — this is *intra-module* dead code. The summary-write
+> implementation lives as prototype methods on the always-instantiated `ContainerRuntime`
+> class, so it can't tree-shake even though it's functionally dead on a client that
+> summarizes server-side. This lever *manufactures a module boundary* so the code can be
+> stubbed, extending the same delay-load seam the summarizer stubs (F-summarizer /
+> summaryManager / summaryCollection) already sit on.
+
+- **Code.** `ContainerRuntime` implements the `ISummarizerInternalsProvider` summary-write
+  path — `submitSummary`, `refreshLatestSummaryAck`, and the `summarize` /
+  `summarizeInternal` helpers plus two private helpers (`shouldFailSummaryOnPendingOps`,
+  `fetchLatestSnapshotAndMaybeClose`). Those two public entry points are the **only**
+  members of `ISummarizerInternalsProvider`, and both are called **exclusively** from the
+  delay-loaded client-side `Summarizer` (`runningSummarizer.ts` → the provider). A client
+  that summarizes server-side never reaches them (its `Summarizer` is delay-loaded and
+  already stubbed in this bundle).
+- **When active (no polyfill).** These are prototype methods on the always-constructed
+  `ContainerRuntime` instance, so they are retained even though never invoked on a
+  non-summarizing client. Not tree-shakeable — the delay-load seam runs *through* the core
+  module (`containerRuntime.ts`), not *between* two modules, so `maxChunks:1` (single chunk)
+  cannot drop it.
+- **In `encapsulated-no-tree`.** ~24 KB of source (`lib/summary/summaryInternals.js` =
+  23,736 B pre-minify) reachable only through the summary-write path — dead weight here.
+- **Optionality — extract + stub (precondition: client summarizes server-side).** The six
+  core method bodies were relocated out of `containerRuntime.ts` into a new statically
+  imported leaf module `summary/summaryInternals.ts` as free functions taking a structural
+  `host: ISummaryInternalsHost` (a type-only view of `ContainerRuntime`, 0 runtime bytes).
+  `ContainerRuntime` retains four thin delegators — `submitSummary`,
+  `refreshLatestSummaryAck` (interface + directly tested), `summarize` (public + patched by
+  tests), `summarizeInternal` (captured by the summarizerNode factory closure) — each
+  `return xCore(this as unknown as ISummaryInternalsHost, ...)`. The two private helpers
+  (`shouldFailSummaryOnPendingOps`, `fetchLatestSnapshotAndMaybeClose`) have no external or
+  test callers and became module-local (fully removed from the class). Constants
+  `defaultPendingOpsWaitTimeoutMs` / `defaultPendingOpsRetryDelayMs` moved to a cycle-free
+  leaf `summary/summaryConstants.ts`, re-exported from `containerRuntime.ts` to preserve the
+  test's import path. A throwing `summary/summaryInternalsStub.ts` + a
+  `NormalModuleReplacementPlugin` (`summaryInternals.js` → `summaryInternalsStub.js`) in the
+  scenario `webpack.config.cts` drops the module. Because `maxChunks:1` forces a single
+  chunk, the static import + stub is what excludes it (dynamic import alone would not).
+  Safe **only** if this client never generates a summary itself; fail mode: every stub entry
+  point throws `"summaryInternals is stubbed out in this build"` — **loud, not corrupting**.
+- **Status — IMPLEMENTED (−8,058 B parsed / −2,549 B gzip).** Apples-to-apples
+  (same source, only the webpack replacement toggled): real-module 479,486 parsed / 127,364
+  gzip → stubbed 471,428 parsed / 124,815 gzip. Matches the hand-edit ceiling test
+  (~8,098 B parsed). **Left uncommitted for review** — see risk note below.
+- **Validation — symmetric with the real module (stronger than F24).** Unlike F24 (whose
+  stub cannot be behavior-validated), the extraction is validated by running the package's
+  own suite against the **real** `summaryInternals.js`: in Node/mocha the static import
+  resolves to the real module, so unit + fuzz exercise the refactored code directly. Result:
+  **969 passing / 0 failing** (1 pre-existing pending) in the container-runtime ESM suite,
+  including the summarizer fuzz seeds and all pending-ops summary tests
+  (`summary fails before/after generate if there are pending ops`,
+  `summary passes if pending ops are processed during ...`). One extraction bug was caught
+  and fixed by these tests: `submitSummaryCore` must call the **patchable** `host.summarize`
+  delegator (so `containerRuntime.summarize = patch(...)` in the "fails after generate" test
+  takes effect), not the module-local `summarizeCore` — `summarize` was added to
+  `ISummaryInternalsHost` for this. The bundle stub itself validates **size only**, not
+  correctness (the scenario always summarizes server-side).
+- **Risk — highest-blast-radius lever so far; read before merging.** This is a ~600-line
+  refactor of the most safety-critical subsystem (summary generation → document
+  persistence) for 8 KB parsed / 2.5 KB gzip. Two things a reviewer must weigh: (1) six
+  formerly-`private` `ContainerRuntime` members are now `public`
+  (`closeSummarizerDelayMs`, `loadedFromVersionId`, `isSnapshotInstanceOfISnapshot`,
+  `lastAckedSummaryContext`, `submitSummaryMessage`, `readAndParseBlob`) because they are
+  read via the `host` cast and `noUnusedLocals` can no longer see the intra-class use.
+  Access modifiers are erased at emit (zero runtime/bundle impact) and `ContainerRuntime` is
+  `@internal` (the class is not tracked in any API report, so this does **not** change the
+  public API surface), but a production version should still re-encapsulate (e.g. an internal
+  symbol-keyed host interface) rather than widen the class's visibility. (2) The `host` cast
+  relies on every declared member existing at runtime; it does, but the compiler no longer
+  enforces the coupling, so future field renames on `ContainerRuntime` would silently break
+  the extracted functions unless the interface is kept in sync.
+
 ## Summary matrix
 
 | # | Feature | Active by default? | Reached in `no-tree`? | Optionality | Recommendation |
@@ -424,6 +498,7 @@ that introduces a seam).
 | F22 | E2E message timing | Unconditional | Yes | **off-limits (telemetry)** | do not remove |
 | F23 | Transitive deps (lz4js) | With F4 | Yes | stub (w/ F4) | bundle w/ F4 |
 | F24 | Aqueduct SharedMap legacy factory | Registered always | **Already stubbed** | stub (done) | — done (−8.9 KB; precondition: no legacy SharedMap-rooted docs) |
+| F25 | ContainerRuntime summary-write cluster | Prototype methods (always) | **Extracted + stubbed** | extract + stub (done) | — done (−8.06 KB parsed / −2.55 KB gzip; precondition: client summarizes server-side; uncommitted, see risk) |
 
 ## Proposal for code changes
 

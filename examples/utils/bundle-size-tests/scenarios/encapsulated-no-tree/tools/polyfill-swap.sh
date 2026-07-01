@@ -12,7 +12,7 @@
 # Usage:
 #   tools/polyfill-swap.sh baseline           # run suite with REAL modules (control)
 #   tools/polyfill-swap.sh <stub-id>...       # run suite with the named stub(s) swapped in
-#   tools/polyfill-swap.sh all                # run suite with ALL 7 stubs swapped in
+#   tools/polyfill-swap.sh all                # run suite with ALL 8 stubs swapped in
 #   tools/polyfill-swap.sh list               # print the stub-id -> (real,stub) table
 #
 # Stub ids: id-compressor summarizer election blob-manager gc summarizer-node
@@ -35,6 +35,7 @@ MAP=(
   "gc|$CR/lib|gc/garbageCollection.js|gc/garbageCollectionStub.js"
   "summarizer-node|$CR/lib|summary/summarizerNode/summarizerNodeWithGc.js|summary/summarizerNode/summarizerNodeWithGcStub.js"
   "summary-collection|$CR/lib|summary/summaryCollection.js|summary/summaryCollectionStub.js"
+  "summary-internals|$CR/lib|summary/summaryInternals.js|summary/summaryInternalsStub.js"
 )
 # NOTE: telemetry stubs (connection-telemetry, signal-telemetry, batch-tracker, sampled-telemetry)
 # were intentionally removed — telemetry is not stubbed out of this bundle (project decision).

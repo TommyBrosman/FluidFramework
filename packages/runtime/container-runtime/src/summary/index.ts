@@ -141,3 +141,14 @@ export {
 	SummarizeHeuristicData,
 	SummarizeHeuristicRunner,
 } from "./summaryDelayLoadedModule/index.js";
+export {
+	defaultPendingOpsRetryDelayMs,
+	defaultPendingOpsWaitTimeoutMs,
+} from "./summaryConstants.js";
+export {
+	refreshLatestSummaryAckCore,
+	submitSummaryCore,
+	summarizeCore,
+	summarizeInternalCore,
+	type ISummaryInternalsHost,
+} from "./summaryInternals.js";
