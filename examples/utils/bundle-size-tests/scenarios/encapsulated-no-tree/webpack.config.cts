@@ -234,6 +234,32 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of two pure-telemetry helpers with zero functional effect.
+		// `batchTracker.js` (`BatchTracker`/`BindBatchTracker`) only subscribes to batchBegin/
+		// batchEnd and calls logger.sendPerformanceEvent; `sampledTelemetryHelper.js`
+		// (`SampledTelemetryHelper`) is a timing wrapper whose `measure(cb)` executes and returns
+		// `cb()` — the measured code, not the helper, carries all behavior. Replacing them with a
+		// no-op BindBatchTracker and a passthrough `measure` preserves runtime behavior exactly
+		// while dropping the sampling/aggregation/logging code. The "Stub" infix keeps each regex
+		// from matching its own replacement module.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]batchTracker\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/batchTracker\.js$/,
+					"batchTrackerStub.js",
+				);
+			},
+		),
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]sampledTelemetryHelper\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(
+					/sampledTelemetryHelper\.js$/,
+					"sampledTelemetryHelperStub.js",
+				);
+			},
+		),
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`

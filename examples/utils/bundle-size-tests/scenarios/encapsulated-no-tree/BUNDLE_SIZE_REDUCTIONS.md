@@ -47,6 +47,7 @@ for these Terser-minified bundles) for the single chunk
 | **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
 | **+ summarizer-node tree stub polyfill** (`NormalModuleReplacementPlugin`) | **483,822 B** | **127,166 B** |
 | **+ summaryCollection stub polyfill** (`NormalModuleReplacementPlugin`) | **479,772 B** | **126,210 B** |
+| **+ batchTracker + sampledTelemetryHelper stub polyfills** (`NormalModuleReplacementPlugin`) | **477,179 B** | **125,457 B** |
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
@@ -136,6 +137,7 @@ engineering. Ordered by size:
 | Summarizer-node tracking tree (`summary/summarizerNode/summarizerNode` 5,612 + `summary/summarizerNode/summarizerNodeWithGc` 3,690 + terser DCE) | **−9,150 B (implemented)** | ✅ **IMPLEMENTED.** The node tree tracks per-node summary/GC state so the summarizer client can build incremental summaries. This client summarizes server-side (summarizer stubbed) and runs with GC disabled (`garbageCollection` stubbed), so the tree's reference / used-route / change tracking is dead weight. `createRootSummarizerNodeWithGC` is the single value site (containerRuntime.ts), and `summarizerNode.js` is imported only by `summarizerNodeWithGc.js`, so replacing the latter via `NormalModuleReplacementPlugin` drops both. The stub keeps every-client lifecycle faithful (createChild/getChild/deleteChild maintain a child map; recordChange/invalidate are no-ops; isReferenced ⇒ true since GC is disabled) and throws on summarizer-only/GC methods. Verified-tolerant consumers: `getChild` undefined is guarded (dataStoreContext.ts), `referenceSequenceNumber` has no datastore-infra readers, `invalidate`/`recordChange` affect only summary state. See section below. | Build-config opt-in (consumer summarizes server-side + GC disabled) |
 | Garbage collection (`gc/garbageCollection` 11,404 + `gc/gcTelemetry` 2,895 + `gc/gcUnreferencedStateTracker` 1,789 + `gc/gcSummaryStateTracker` 1,680 + `gc/gcConfigs` 1,282 + `gc/gcReferenceGraphAlgorithm` + terser DCE) | **−20,886 B (implemented)** | ✅ **IMPLEMENTED.** This client summarizes server-side (the summarizer is already stubbed) and the consuming app does not rely on GC sweep / tombstone deletion enforcement. The single value site `GarbageCollector.create(...)` (containerRuntime.ts:1932, all ~20 usages via the `IGarbageCollector` interface) is reached only through `gc/garbageCollection.js`; replacing that file with a no-op stub (`shouldRunGC === false`, `isNodeDeleted === false`, valid-empty summary/metadata) drops it plus its **exclusive** deps. `gcHelpers`/`gcDefinitions` (`GCNodeType` enum) stay alive via `summarizerNodeWithGc`/`channelCollection` but are small. See section below. | Build-config opt-in (consumer asserts no reliance on GC sweep) |
 | `SummaryCollection` summary-ack tracking (`summary/summaryCollection` + terser DCE) | **−4,050 B (implemented)** | ✅ **IMPLEMENTED.** `SummaryCollection` watches inbound summary-ack/nack ops so a *summarizing* client can await its own summaries. It is constructed unconditionally (containerRuntime.ts:2290) but its only consumers — the client-side `Summarizer` and the `setupSummaryManager` election — are **already stubbed out**, and ContainerRuntime never calls a method on the instance on the non-summarizer path. `SummaryCollection` is the module's only value export and is not re-exported by the scenario `index.ts`, so replacing `summary/summaryCollection.js` with a no-op stub (faithful event-emitter + trivial accessors; throws on the summarizer-only `createWatcher`/`waitSummaryAck`, which are never reached) drops it cleanly. Below the 5 KB bar but zero-risk and a true removal. See section below. | Build-config opt-in (consumer summarizes server-side) |
+| `BatchTracker` + `SampledTelemetryHelper` (pure-telemetry helpers + terser DCE) | **−2,593 B (implemented)** | ✅ **IMPLEMENTED.** Two observability-only helpers with **zero functional effect**. `BatchTracker` (`batchTracker.js`, bound at containerRuntime.ts:2177) only subscribes to `batchBegin`/`batchEnd` and calls `sendPerformanceEvent`. `SampledTelemetryHelper` (`sampledTelemetryHelper.js`, shared-object-base) is a timing wrapper whose `measure(cb)` **executes and returns `cb()`** — the measured code carries all behavior — plus periodically logs duration samples. Replacing the first with a no-op `BindBatchTracker` and the second with a **passthrough** `measure` preserves runtime behavior exactly while dropping the sampling/aggregation/logging code. Zero behavior/compat risk; only loses batch-size and op/callback-duration telemetry. See section below. | None (telemetry-only) |
 | `SharedMap` aqueduct back-compat registration | **~9,506 B** | ❓ **OPEN QUESTION** — are pre-0.10 SharedMap-DataObject documents still in scope? Owner decision pending. | Compat (load-bearing) |
 | `lz4js` compress+decompress + `OpCompressor` + `OpDecompressor` | **~4,412 B (measured)** | ⏸️ **GATED — below threshold + highest interop risk; not landed.** Op compression is **ON by default** (grouped batching ⇒ `minimumBatchSizeInBytes: 614400`, `compressionDefinitions.ts:42`). `lz4js` is a CJS module (compress/decompress cannot be tree-shaken apart); redirecting the `lz4js` request to a throwing stub was measured at only **−4,412 B parsed / −1,719 B gzip** (the 12.7 KiB raw source minifies down hard). `decompress` is required inbound because **any participant** may send a batch > ~600 KB as a compressed op, so removal needs a session-wide guarantee that no client ever compresses (or compression is disabled document-wide). Both **below the 5 KB candidate bar** and the **riskiest** change considered (a violated precondition fails the op stream, not just a local feature). Documented, not landed. | Wire-format interop (session-wide) |
 | Re-include + shrink `tree` | — | ❌ **OUT OF SCOPE** (confirmed). | Scope |
@@ -500,6 +502,38 @@ the throwing summarizer-only methods. The regex `/[\\/]summaryCollection\.js$/` 
 the replacement module itself (`summaryCollectionStub.js`). The full container-runtime suite
 (968 tests, +3 new) passes — the suite still exercises the *real* `SummaryCollection`.
 
+### Excluding pure-telemetry helpers `BatchTracker` + `SampledTelemetryHelper` (~2.6 KB) — IMPLEMENTED
+
+**Result.** Single chunk drops from **479,772 → 477,179 B parsed** (−2,593) and
+**126,210 → 125,457 B gzip** (−753). Two observability-only modules are replaced with
+behavior-preserving stubs shipped by their owning packages; source-map confirms only
+`batchTrackerStub.ts` / `sampledTelemetryHelperStub.ts` remain.
+
+**Why they are removable here.** Neither helper has any functional effect on op processing
+or runtime state:
+
+- **`BatchTracker` (`container-runtime/src/batchTracker.ts`).** Bound unconditionally via
+  `BindBatchTracker(this, this.baseLogger)` (containerRuntime.ts:2177). It only subscribes to
+  the runtime's `batchBegin`/`batchEnd` events and calls `logger.sendPerformanceEvent` with
+  batch length / duration. The stub's `BindBatchTracker` subscribes to nothing.
+- **`SampledTelemetryHelper` (`telemetry-utils/src/sampledTelemetryHelper.ts`).** Used by
+  `SharedObjectCore` (shared-object-base, the base of every DDS) to wrap op processing
+  (`opProcessingHelper.measure(...)`) and event emit (`callbacksHelper.measure(...)`). Its
+  `measure(codeToMeasure)` **executes `codeToMeasure()` and returns its result** — the
+  measured callback carries all functional behavior — and additionally records timing samples
+  and periodically emits a performance event. The stub is a **passthrough**: `measure(cb)`
+  simply `return cb()`, and `dispose()` flips the disposed flag. Behavior is identical minus
+  the telemetry.
+
+**Safety / contract.** Pure observability, so no precondition — this is safe for any client
+(the only loss is batch-size and op/callback-duration telemetry), exactly like the op-perf /
+signal-telemetry stubs. Compile-time `requireAssignableTo` drift specs pin the value-export
+surface + the `BindBatchTracker` / `measure` / constructor signatures against the real modules,
+and runtime tests assert the passthrough executes the callback exactly once per call and returns
+its value. Each regex (`/[\\/]batchTracker\.js$/`, `/[\\/]sampledTelemetryHelper\.js$/`) is kept
+from matching its own replacement by the "Stub" infix. The full container-runtime suite (969
+tests, +1 new) and telemetry-utils suite (+2 new) pass — both still exercise the *real* helpers.
+
 ### Research: where lz4js is used (~4,672 B)
 
 `lz4js` enters the bundle through **two** static imports in container-runtime's
@@ -726,15 +760,14 @@ already-tabled gated candidates (SharedMap, serializedStateManager-offline, lz4j
 
 #### Sub-threshold / gated candidates found by the audit
 
-- **`BatchTracker` (`batchTracker.ts`, ~1.0 KB parsed) — pure telemetry, BELOW the 5 KB bar.**
-  Bound unconditionally (`containerRuntime.ts:2177` `BindBatchTracker`) but only subscribes to
-  `batchBegin`/`batchEnd` and calls `logger.sendPerformanceEvent` — **zero functional effect**,
-  exactly like the already-landed op-perf / signal-telemetry stubs. Removable via a no-op
-  `BindBatchTracker` stub for **~1 KB**. Not landed: below the 5 KB candidate bar and the only
-  standalone pure-telemetry module left (all dedicated telemetry modules —
-  `connectionTelemetry`, `signalTelemetryProcessing`, `gcTelemetry` — are already
-  stubbed/removed; every other telemetry call is inline within a functional module and can't be
-  split out).
+- **`BatchTracker` (`batchTracker.ts`, ~1.0 KB parsed) — LANDED** (batched with
+  `SampledTelemetryHelper`, see the implemented section above). Pure telemetry (bound at
+  `containerRuntime.ts:2177`, only `sendPerformanceEvent`, zero functional effect); replaced by a
+  no-op `BindBatchTracker` stub. Together with the `SampledTelemetryHelper` passthrough it removed
+  −2,593 B parsed / −753 B gzip. These were the last standalone pure-telemetry modules (all
+  dedicated telemetry modules — `connectionTelemetry`, `signalTelemetryProcessing`, `gcTelemetry`
+  — are already stubbed/removed; every other telemetry call is inline within a functional module
+  and can't be split out).
 - **Merge-tree summary WRITE path (`snapshotV1.ts` 3,697 + the write half of `snapshotlegacy.ts`
   ~2,000 + DCE of `summarizeMergeTree`/`client.snapshot`) ≈ 6 KB parsed — GATED on a "load-only
   client" precondition.** Only reachable through `getAttachSummary`/`summarize`. A mobile client
