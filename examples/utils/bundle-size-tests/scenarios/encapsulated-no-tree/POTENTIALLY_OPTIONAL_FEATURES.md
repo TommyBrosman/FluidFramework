@@ -318,6 +318,39 @@ that introduces a seam).
 - **Optionality — stub, coupled to F4.** A `lz4js` module stub is the concrete lever; its validity is entirely F4's precondition.
 - **Proposal.** *Bundle with F4.* Do not stub `lz4js` alone — a stray compressed inbound op would then be undecodable.
 
+### F24 — Aqueduct SharedMap legacy-compat factory
+
+> Also from the import-trace pass. This is *accidental* coupling: aqueduct pins
+> `SharedMap` for legacy back-compat even though this app only uses `SharedDirectory`.
+
+- **Code.** `DataObjectFactory` unconditionally registers the SharedMap factory —
+  `dataObjectFactory.ts:84` `sharedObjects.push(SharedMap.getFactory())` — guarded only
+  by a stale comment (`dataObjectFactory.ts:81`): *"TODO: Remove SharedMap factory when
+  compatibility with SharedMap DataObject is no longer needed in 0.10."* This is the
+  **sole importer** keeping `SharedMap` in the bundle; `DataObject` itself uses only
+  `SharedDirectory` (`dataObject.ts:69`). `dataObject.ts:56-64` explains why the compat
+  exists: a pre-0.10 document's root may be an `ISharedMap` masquerading as
+  `ISharedDirectory`.
+- **When active (no polyfill).** Registered on every `DataObjectFactory`; only
+  *exercised* when loading a legacy document whose DataObject root channel was created as
+  a `SharedMap`.
+- **In `encapsulated-no-tree`.** Bundled: **~9,484 B parsed dead weight** —
+  `mapKernel.ts` 7,246 + `map.ts` (SharedMap) 1,892 + `mapFactory.ts` 346.
+  `SharedDirectory` has its own kernel (`directory.ts` does **not** import `mapKernel`),
+  so dropping SharedMap removes `mapKernel` entirely.
+- **Optionality — stub (precondition: no legacy SharedMap-rooted documents).** Because
+  `@fluidframework/map` is `sideEffects:false`, the *only* edge pinning SharedMap is the
+  aqueduct registration. Remove it (an app-level `DataObjectFactory` that omits the
+  SharedMap registration, or a `SharedMap`/`mapFactory` module stub) and
+  `SharedMap` + `mapKernel` + `mapFactory` tree-shake away. Safe **only** if this client
+  never opens a document whose DataObject root was a `SharedMap` — i.e., all documents
+  were created by DataObject ≥ 0.10 (which uses `SharedDirectory`). Fail mode: loading a
+  legacy SharedMap-rooted doc throws "unknown channel type" — **loud, not corrupting**.
+- **Proposal.** *Candidate — above the 5 KB bar and the cleanest of the new levers* (no
+  deep refactor; the map package already tree-shakes, only the aqueduct edge pins it).
+  Gated on a "no pre-0.10 SharedMap-rooted documents" precondition — plausible for a
+  greenfield mobile deployment.
+
 ## Summary matrix
 
 | # | Feature | Active by default? | Reached in `no-tree`? | Optionality | Recommendation |
@@ -345,6 +378,7 @@ that introduces a seam).
 | F21 | Return before fully loaded | Config-driven | Yes | config | no change |
 | F22 | E2E message timing | Unconditional | Yes | **off-limits (telemetry)** | do not remove |
 | F23 | Transitive deps (lz4js) | With F4 | Yes | stub (w/ F4) | bundle w/ F4 |
+| F24 | Aqueduct SharedMap legacy factory | Registered always | Yes (~9.3 KB) | **stub (no legacy SharedMap-rooted docs)** | **candidate** — cleanest; map already tree-shakes |
 
 ## Proposal for code changes
 
@@ -359,7 +393,15 @@ project memory). **No telemetry** (F22) is in scope.
   −15.6 KB parsed). No new work; listed so the matrix is complete.
 
 ### Tier 1 — new gated stubs worth prototyping
-1. **F4+F5+F23 — compression/chunking + `lz4js`, behind a session-wide "no lz4
+1. **F24 — Aqueduct SharedMap legacy-compat factory, behind a "no pre-0.10
+   SharedMap-rooted documents" precondition.** Drop the
+   `sharedObjects.push(SharedMap.getFactory())` registration
+   (`dataObjectFactory.ts:84`) — via an app-level `DataObjectFactory` or a
+   `SharedMap`/`mapFactory` stub. Since `@fluidframework/map` is `sideEffects:false`,
+   `SharedMap` + `mapKernel` + `mapFactory` (~9.3 KB parsed) then tree-shake away.
+   **Cleanest new lever** (no deep refactor). Loud fail mode ("unknown channel type")
+   if a legacy SharedMap-rooted doc is opened.
+2. **F4+F5+F23 — compression/chunking + `lz4js`, behind a session-wide "no lz4
    compression" precondition.** Add `opCompressorStub` (throwing `compressBatch`),
    `opDecompressorStub` (**throws on encountering any compressed envelope** so a
    violated precondition fails loudly rather than corrupting data), and an `lz4js`
@@ -367,22 +409,23 @@ project memory). **No telemetry** (F22) is in scope.
    correctness — only valid if *no client in the collaboration* compresses. Requires
    explicit product sign-off; document as a new "Root" in `POLYFILL_VALIDITY.md`
    analogous to the blob/no-attachment precondition. Est. ~5–6 KB parsed.
-2. **F8 — `serializedStateManager` stub, behind a "no offline serialize/rehydrate"
+3. **F8 — `serializedStateManager` stub, behind a "no offline serialize/rehydrate"
    precondition.** No-op manager (dummy `fetchSnapshot`, throwing
    `getPendingLocalState`, no background refresh). Cross-check against the prior
    `serializedStateManager` offline analysis already in
    `BUNDLE_SIZE_REDUCTIONS.md` before implementing. Medium risk (breaks offline
-   persistence if the precondition is wrong).
+   persistence if the precondition is wrong). *Note: prior prototype measured only
+   −4,259 B — below the 5 KB bar; kept here for completeness.*
 
 ### Tier 2 — config, not code (no bundle change)
-3. **F13 heartbeats** — ask the service to set `noopTimeFrequency`/
+4. **F13 heartbeats** — ask the service to set `noopTimeFrequency`/
    `noopCountFrequency = +Infinity` for this client class instead of stubbing
    `NoopHeuristic` (server-visible behavior). 
-4. **F21 return-before-loaded** — pass the desired `IContainerLoadMode`; no code
+5. **F21 return-before-loaded** — pass the desired `IContainerLoadMode`; no code
    change.
 
 ### Tier 3 — large refactors (defer)
-5. **F1/F2 static-code container** — a `createStaticContainer(runtimeFactory)` entry
+6. **F1/F2 static-code container** — a `createStaticContainer(runtimeFactory)` entry
    in container-loader that bypasses `codeLoader`/code-proposal (and enables a
    quorum-lite). Removes real bootstrap weight but changes public shape and is
    cross-cutting. Design-review gated; not a quick stub.
@@ -436,7 +479,8 @@ explicitly asked.
 3. **Re-verify the Proposal section.** Re-check the Tier 0–3 lists and the
    "Evaluated and rejected as size levers" / "Explicitly not changing" notes against
    the new analysis. Re-confirm size estimates and which candidates clear the **5 KB
-   bar** (currently only the **F4+F5+F23** compression bundle at ~5–6 KB).
+   bar** (currently two: **F24** SharedMap legacy factory ~9.3 KB, and the **F4+F5+F23**
+   compression bundle ~5–6 KB).
 4. **Re-verify the size numbers.** Realized stubs (F16 −20.9 KB, F17 −15.6 KB) and
    the measured F8 ceiling (−4,259 B parsed) should be re-measured if the underlying
    modules changed; update `remeasure`/`features` session tables accordingly.
