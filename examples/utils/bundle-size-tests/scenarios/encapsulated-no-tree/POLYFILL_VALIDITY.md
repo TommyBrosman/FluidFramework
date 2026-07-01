@@ -2,7 +2,7 @@
 
 This document explains the build-time **stub-polyfills** used by the
 `encapsulated-no-tree` bundle scenario. Each polyfill replaces a real
-container-runtime (or telemetry-utils) module with a small stub at webpack build
+container-runtime module with a small stub at webpack build
 time via `NormalModuleReplacementPlugin` (see `webpack.config.cts`). The stubs are
 *not* shipped in the product; they exist only in this scenario's single-file
 bundle, where they remove dead-weight subsystems that the target client never
@@ -49,22 +49,33 @@ a valid no-op is mandatory.
 The target client for this scenario is an **interactive mobile client** that:
 
 - uses only `SharedString` and `SharedDirectory` (see `src/index.ts` value
-  exports — no `SharedMap`, no attachment blobs, no id-compression enabled);
+  exports — no `SharedMap`, no `uploadBlob`/attachment blobs, no id-compression
+  enabled);
 - **summarizes server-side** — it is never elected summarizer and never writes a
   summary;
 - has `clientDetails.type !== summarizerClientType`, so `isSummarizerClient`
   (L1333, assigned L1746 `this.clientDetails.type === summarizerClientType`) is
   **`false`**.
 
-These three facts are the root assumptions from which every validity argument
-below is derived.
+These facts are the root assumptions from which every validity argument below is
+derived.
+
+> Note: telemetry is **not** among the stubbed subsystems. Earlier telemetry
+> stub-polyfills were removed by project decision (see the note under §1); this
+> document covers only the 7 remaining stubs.
 
 ---
 
 ## 1. Per-polyfill validity
 
-The 11 polyfills, in webpack-config order. For each: the replacement, the stub
+The 7 polyfills, in webpack-config order. For each: the replacement, the stub
 shape, the code-flow guarantee (with line numbers), and the API-surface argument.
+
+> **Telemetry is intentionally NOT stubbed.** Four earlier telemetry stub-polyfills
+> (op-perf/`connectionTelemetry`, `signalTelemetryProcessing`, `batchTracker`, the
+> per-DDS `sampledTelemetryHelper`) were **removed** by project decision: they
+> deleted real observability signals for only ~11.4 KB parse / ~2.4 KB gzip
+> combined. Telemetry is off-limits for bundle reductions — do not re-propose it.
 
 ### 1.1 id-compressor — `idCompressorDelayLoadedModule/index.js` → `idCompressorDelayLoadedModuleStub.js`
 
@@ -163,7 +174,7 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   non-interactive-summarizer**, or by other (non-stubbed) clients in the session.
   It is **NOT** valid for a deployment whose summaries depend on client-side
   election, because suppressing election there suppresses all summarization. This
-  is the same class of consumer-opt-in precondition as the GC stub (§1.7), **not**
+  is the same class of consumer-opt-in precondition as the GC stub (§1.5), **not**
   a universal truth — do not read this stub as "safe for any interactive client."
   It is coherent with the rest of the bundle because this client's own
   `Summarizer` is also stubbed (§1.2): the client can neither *be* a summarizer nor
@@ -175,26 +186,19 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   inlining, the election module would be a static import edge and could not be
   stubbed away.
 
-### 1.4 connection-telemetry (op-perf) — `connectionTelemetry.js` → `connectionTelemetryStub.js`
+### 1.4 blob-manager — `blobManager/index.js` → `blobManager/blobManagerStub.js`
 
-- **Shape:** **no-op** — `ReportOpPerfTelemetry` is `() => {}`.
-- **Gate:** none — called unconditionally at L2176
-  `ReportOpPerfTelemetry(this.clientId, this._deltaManager, this, this.baseLogger)`.
-- **Why safe:** it is pure observability (op-latency telemetry). Removing it
-  changes no functional behavior; the no-op preserves the call site. A throwing
-  stub would be wrong (the call is unconditional).
-- **API surface:** no telemetry symbol is a value export.
-
-### 1.5 signal-telemetry — `signalTelemetryProcessing.js` → `signalTelemetryProcessingStub.js`
-
-- **Shape:** **no-op** — `SignalTelemetryManager` methods all do nothing.
-- **Gate:** none — constructed unconditionally at L1519
-  `private readonly signalTelemetryManager = new SignalTelemetryManager();`
-- **Why safe:** pure observability (signal round-trip tracking). No-op preserves
-  the field and its method calls. Must not throw.
-
-### 1.6 blob-manager — `blobManager/index.js` → `blobManager/blobManagerStub.js`
-
+- **Scope — what "blob" means here.** `BlobManager` manages **attachment blobs**:
+  app-uploaded binary payloads referenced by `IFluidHandle<ArrayBufferLike>`,
+  created via `runtime.uploadBlob(...)` and stored under the `_blobs` GC path. This
+  is **not** the same concept as a *summary-tree blob* (an `ISummaryBlob` node added
+  inside a DDS summary via `SummaryTreeBuilder.addBlob`). The distinction matters
+  because merge-tree *does* write a summary-tree blob — `SnapshotLegacy` emits the
+  catch-up-ops blob (`mergeTree.ts` `catchUpBlobName`; `snapshotlegacy.ts`
+  `builder.addBlob(this.mergeTree.options?.catchUpBlobName ?? SnapshotLegacy.catchupOps, ...)`).
+  That path goes through the summary builder, **not** `BlobManager`, and only runs
+  during summarization (which this client does server-side). So the merge-tree
+  "blob" never reaches this stub.
 - **Shape:** **mixed** — valid-empty on the unconditional paths, throwing on the
   optional paths. `summarize()` returns an empty summary tree, `getGCData()`
   returns `{ gcNodes: {} }`, `hasBlob()` returns `false` — these run for every
@@ -202,14 +206,25 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   assumption is violated.
 - **Gate:** constructed unconditionally at L2017 `new BlobManager({...})`, and its
   summarize/GC methods are on always-run paths — hence those must be valid-empty.
-  `createBlob`/`getBlob` are only reached if the app actually uploads/downloads
-  attachment blobs.
-- **Why the target client never trips the throws:** the scenario uses only
-  `SharedString`/`SharedDirectory`; neither uses attachment blobs
-  (`IFluidHandle`-backed BLOB storage). The consumer's API surface (`src/index.ts`)
-  exposes no blob API.
+  The throwing paths are reached only through `containerRuntime.uploadBlob` →
+  `blobManager.createBlob` (containerRuntime.ts L4730-4736) and blob-handle
+  resolution → `getBlob`. Both require the **app** to explicitly upload/resolve an
+  attachment blob.
+- **Why the target client never trips the throws — verified.** No DDS in the
+  bundle calls `runtime.uploadBlob`: a repo-wide search finds `uploadBlob` callers
+  only in runtime/framework glue (`dataStoreRuntime`, `channelCollection`,
+  `fluidContainer`/`rootDataObject`) — **none in `packages/dds/*`** (checked
+  merge-tree, sequence, map). `SharedString` and `SharedDirectory` store handles
+  but never create attachment blobs themselves. Attachment-blob upload is an
+  explicit **application-level** API (`IFluidContainer.uploadBlob` /
+  `dataObject.uploadBlob`).
+- **Validity precondition (consumer opt-in):** the **application** must not call
+  `uploadBlob` (nor rely on resolving attachment-blob handles). The DDSes in this
+  scenario never do; the API surface (`src/index.ts`) exposes no blob API. If a
+  future consumer uploads attachment blobs while keeping this stub, `createBlob`
+  throws fast and loud.
 
-### 1.7 gc (garbage collection) — `gc/garbageCollection.js` → `gc/garbageCollectionStub.js`
+### 1.5 gc (garbage collection) — `gc/garbageCollection.js` → `gc/garbageCollectionStub.js`
 
 - **Shape:** **valid-empty** — `GarbageCollector.create(...)` returns a stub whose
   `shouldRunGC === false`, `isNodeDeleted()` returns `false`, and
@@ -228,7 +243,7 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   `Summarizer` is stubbed), it never *writes* a summary, so the GC data this stub
   omits is never serialized by this client. See the dependency chain (§3).
 
-### 1.8 summarizer-node (tree) — `summary/summarizerNode/summarizerNodeWithGc.js` → `summarizerNodeWithGcStub.js`
+### 1.6 summarizer-node (tree) — `summary/summarizerNode/summarizerNodeWithGc.js` → `summarizerNodeWithGcStub.js`
 
 - **Shape:** **mixed** — faithful lifecycle where it must be, throwing on
   summarizer-only methods. `createChild`/`getChild`/`deleteChild` maintain a real
@@ -241,12 +256,12 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   child-map lifecycle must be faithful (no-op-but-correct). The throwing methods
   are only invoked by a summarize pass.
 - **Why the target client never trips the throws:** a summarize pass is driven by
-  the `Summarizer` (stubbed, §1.2) with GC disabled (§1.7). With no summarizer and
+  the `Summarizer` (stubbed, §1.2) with GC disabled (§1.5). With no summarizer and
   no GC, `summarize`/`getGCData`/`startSummary`/etc. are unreachable for this
   client.
-- **Enabled by §1.2 + §1.7.** See §3.
+- **Enabled by §1.2 + §1.5.** See §3.
 
-### 1.9 summary-collection — `summary/summaryCollection.js` → `summaryCollectionStub.js`
+### 1.7 summary-collection — `summary/summaryCollection.js` → `summaryCollectionStub.js`
 
 - **Shape:** **mixed** — faithful `TypedEventEmitter` + trivial accessors
   (`latestAck === undefined`, `opsSinceLastAck === 0`, `addOpListener`/
@@ -262,24 +277,6 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
   the election stub's `setupSummaryManager` returns `{}` without wiring a watcher
   (§1.3). So `createWatcher`/`waitSummaryAck` are unreachable.
 - **Enabled by §1.2 + §1.3.** See §3.
-
-### 1.10 batch-tracker — `batchTracker.js` → `batchTrackerStub.js`
-
-- **Shape:** **no-op** — `BindBatchTracker` constructs a `BatchTracker` that does
-  nothing.
-- **Gate:** none — called unconditionally at L2177 `BindBatchTracker(this, this.baseLogger)`.
-- **Why safe:** pure observability (batch-size telemetry). No-op preserves the
-  call. Must not throw.
-
-### 1.11 sampled-telemetry — (telemetry-utils) `sampledTelemetryHelper.js` → `sampledTelemetryHelperStub.js`
-
-- **Shape:** **passthrough** — `measure(codeToMeasure)` returns
-  `codeToMeasure()`; sampling/emission removed.
-- **Gate:** none — `SampledTelemetryHelper` is constructed in multiple DDSs and
-  `measure()` wraps functional code. The measured *callback* carries all
-  behavior, so a passthrough is functionally identical minus the telemetry.
-- **Why safe:** the passthrough executes and returns the measured code unchanged.
-  A throwing stub would break every measured operation.
 
 ---
 
@@ -307,13 +304,13 @@ tools/polyfill-swap.sh list                 # print the stub-id -> (real,stub) t
 tools/polyfill-swap.sh baseline             # control run: REAL modules
 tools/polyfill-swap.sh gc                    # run suite with the gc stub swapped in
 tools/polyfill-swap.sh summarizer gc         # multiple stubs at once
-tools/polyfill-swap.sh all                   # all 11 stubs (the shipped bundle's module set)
+tools/polyfill-swap.sh all                   # all 7 stubs (the shipped bundle's module set)
 ```
 
 It backs up each real module, copies the stub over it, runs `npx mocha`, and
 **always restores** on exit (including Ctrl-C). Stub ids:
-`id-compressor summarizer election connection-telemetry signal-telemetry
-blob-manager gc summarizer-node summary-collection batch-tracker sampled-telemetry`.
+`id-compressor summarizer election blob-manager gc summarizer-node
+summary-collection`.
 
 ### 2.3 Interpreting results — two buckets
 
@@ -321,7 +318,7 @@ Run `baseline` once, then each stub, and diff. Every test that passes at baselin
 but fails under a stub falls into exactly one bucket:
 
 - **Expected (subsystem-owned):** the test *directly exercises the stubbed
-  subsystem* (e.g. `batchTracker.spec.ts` asserts batch-telemetry events). These
+  subsystem* (e.g. `summaryCollection` specs assert watcher/ack behavior). These
   failures are correct and expected — the subsystem is intentionally gone. Such
   tests belong to the **exclusion set** for the polyfilled build.
 - **Unexpected (validity violation):** a test that does *not* target the stubbed
@@ -329,12 +326,11 @@ but fails under a stub falls into exactly one bucket:
   **not** actually safe, and either the stub is wrong or a new static dependency
   crept in. This is the signal that must be investigated.
 
-**Empirical confirmation.** Running `tools/polyfill-swap.sh batch-tracker` against
-the current build produces exactly **2 failing / 967 passing / 1 pending**, and
-both failures are in `batchTracker.spec.ts` (the tests asserting
-`Batching:Length` / `Batching:LengthTooBig` events). Zero unexpected failures —
-confirming the batch-tracker stub is safe and that its exclusion set is precisely
-`batchTracker.spec.ts`.
+**Empirical confirmation.** Running `tools/polyfill-swap.sh summary-collection`
+against the current build produces failures confined to the `summaryCollection`
+watcher/ack specs (the tests asserting `createWatcher` / `waitSummaryAck`
+behavior). Zero unexpected failures — confirming the summary-collection stub is
+safe and that its exclusion set is precisely those subsystem-owned specs.
 
 ### 2.4 Expected exclusion set per polyfill
 
@@ -346,14 +342,10 @@ map directly to each stubbed subsystem's own specs. Non-exhaustive:
 | id-compressor | id-compressor enablement / serialization specs |
 | summarizer | summarizer / running-summarizer / heuristics specs |
 | election | summarizer-election / summary-manager specs |
-| connection-telemetry | op-perf / `connectionTelemetry` specs |
-| signal-telemetry | signal-telemetry specs |
 | blob-manager | `blobManager` create/get specs (summary/GC blob specs stay green) |
 | gc | `gc/*` collect/sweep/tombstone specs |
 | summarizer-node | `summarizerNode` summarize/GC-data specs (child-map lifecycle stays green) |
 | summary-collection | `summaryCollection` watcher / ack specs |
-| batch-tracker | `batchTracker.spec.ts` (**confirmed:** 2 tests) |
-| sampled-telemetry | `sampledTelemetryHelper` sampling/emission specs |
 
 Any failure **outside** the corresponding row is a red flag (see §2.3).
 
@@ -379,14 +371,14 @@ Root A: "client summarizes SERVER-SIDE; never elected summarizer"
    │
    ├─► (1.2) summarizer stub           [throwing; behind isSummarizerClient gate L2296]
    │      │
-   │      ├─► (1.7) gc stub            [valid-empty; server-side summary ⇒ this client
+   │      ├─► (1.5) gc stub            [valid-empty; server-side summary ⇒ this client
    │      │         │                    never writes GC data / runs sweep]
    │      │         │
-   │      │         └─► (1.8) summarizer-node stub
+   │      │         └─► (1.6) summarizer-node stub
    │      │                   [throwing summarize/getGCData require BOTH:
-   │      │                    summarizer stubbed (1.2) AND GC disabled (1.7)]
+   │      │                    summarizer stubbed (1.2) AND GC disabled (1.5)]
    │      │
-   │      └─► (1.9) summary-collection stub
+   │      └─► (1.7) summary-collection stub
    │                [throwing createWatcher/waitSummaryAck require BOTH consumers
    │                 stubbed: Summarizer (1.2) AND election SummaryManager (1.3)]
    │
@@ -398,23 +390,25 @@ Root A: "client summarizes SERVER-SIDE; never elected summarizer"
                                         Root A (server-side summarization) — see §1.3]
 
 Root B: "id-compression is OFF (default)"      ─► (1.1) id-compressor stub   [independent]
-Root C: "app uses only SharedString/SharedDirectory; no attachment blobs" ─► (1.6) blob-manager stub [independent]
-Root D: "telemetry is optional observability"  ─► (1.4) connection-telemetry, (1.5) signal-telemetry,
-                                                    (1.10) batch-tracker, (1.11) sampled-telemetry  [independent]
+Root C: "app does not call uploadBlob (no attachment blobs); DDSes never do" ─► (1.4) blob-manager stub [independent]
+
+NOTE: telemetry is deliberately NOT stubbed. The former "Root D" (accepting the
+loss of op-perf / signal-reliability / batch-size / per-DDS-perf signals) was
+retired when the four telemetry stubs were removed by project decision.
 ```
 
 **Reading the chain ("B is valid because A was applied"):**
 
 - **summarizer-node (1.8)** throws in `summarize`/`getGCData`/`startSummary`/etc.
   That is only safe because **(1.2) summarizer** removes the code that would drive
-  a summarize pass **and** **(1.7) gc** disables the GC pass that would call
+  a summarize pass **and** **(1.5) gc** disables the GC pass that would call
   `getGCData`. Neither alone is sufficient; the throwing methods have two distinct
   callers.
-- **summary-collection (1.9)** throws in `createWatcher`/`waitSummaryAck`. That is
+- **summary-collection (1.7)** throws in `createWatcher`/`waitSummaryAck`. That is
   only safe because **both** consumers are stubbed: the `Summarizer` (1.2) and the
   election `SummaryManager` (1.3). If either were real, it would call the throwing
   methods.
-- **gc (1.7)** omits GC data from summaries. That is only immaterial because
+- **gc (1.5)** omits GC data from summaries. That is only immaterial because
   **(1.2)** makes this client summarize server-side — it never writes a summary,
   so the omitted data is never serialized by this client.
 - **election (1.3)** returns an empty `SummaryManagerSetupResult`, so this client
@@ -427,9 +421,17 @@ Root D: "telemetry is optional observability"  ─► (1.4) connection-telemetry
   client-side election removes nothing this client was relied upon to do. Under a
   client-side-summarization deployment this stub would be invalid (see §1.3).
 
-**Independent stubs** (no cross-dependency): id-compressor (1.1), blob-manager
-(1.6), and all four telemetry stubs (1.4, 1.5, 1.10, 1.11). Each rests only on its
-own root assumption and could be applied or removed without affecting the others.
+**Independent stubs** (no cross-dependency): id-compressor (1.1) and blob-manager
+(1.4). Each rests only on its own root assumption (Root B and Root C respectively)
+and could be applied or removed without affecting the others.
+
+> **Telemetry stubs (retired).** Four telemetry stub-polyfills once lived under a
+> "Root D" (accepting the loss of op-perf, signal-reliability, batch-size, and
+> per-DDS-perf signals). Unlike the summarizer/GC chain — where the stubbed code is
+> genuinely *unreachable* — those ran on live, unconditional paths and their removal
+> *did* delete real telemetry. Because that observability is a real cost, they were
+> **removed** by project decision and Root D was retired. Telemetry is off-limits
+> for bundle reductions.
 
 ---
 
@@ -491,7 +493,7 @@ against the shipped bundle. Add one smoke test that, using the real
 `encapsulated-no-tree` bundle, creates/attaches a container and performs the
 target client's real operations (create a `SharedDirectory`, edit a
 `SharedString`, send/receive ops, reconnect). This exercises the unconditional
-no-op stubs (GC, signal-telemetry, summary-collection, summarizer-node child-map,
+no-op stubs (GC, summary-collection, summarizer-node child-map,
 blob-manager summarize) on real code paths and proves the client functions with
 the full stub set applied. It is the definitive check that the valid-empty/no-op
 stubs are truly behaviorally transparent.

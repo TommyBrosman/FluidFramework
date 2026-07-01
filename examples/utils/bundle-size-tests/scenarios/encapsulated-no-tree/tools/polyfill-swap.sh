@@ -12,34 +12,32 @@
 # Usage:
 #   tools/polyfill-swap.sh baseline           # run suite with REAL modules (control)
 #   tools/polyfill-swap.sh <stub-id>...       # run suite with the named stub(s) swapped in
-#   tools/polyfill-swap.sh all                # run suite with ALL 11 stubs swapped in
+#   tools/polyfill-swap.sh all                # run suite with ALL 7 stubs swapped in
 #   tools/polyfill-swap.sh list               # print the stub-id -> (real,stub) table
 #
-# Stub ids: id-compressor summarizer election connection-telemetry signal-telemetry
-#           blob-manager gc summarizer-node summary-collection batch-tracker
-#           sampled-telemetry
+# Stub ids: id-compressor summarizer election blob-manager gc summarizer-node
+#           summary-collection
+#           (telemetry stubs were removed — telemetry is not stubbed in this bundle)
 #
 # The swap is always restored on exit (even on failure / Ctrl-C).
 set -uo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 CR="$REPO_ROOT/packages/runtime/container-runtime"
-TU="$REPO_ROOT/packages/utils/telemetry-utils"
+TU="$REPO_ROOT/packages/utils/telemetry-utils"  # retained for the PKGS logic; no telemetry stubs currently mapped
 
 # stub-id | package-lib-dir | real (relative to lib) | stub (relative to lib)
 MAP=(
   "id-compressor|$CR/lib|idCompressorDelayLoadedModule/index.js|idCompressorDelayLoadedModuleStub.js"
   "summarizer|$CR/lib|summary/summaryDelayLoadedModule/index.js|summary/summaryDelayLoadedModuleStub.js"
   "election|$CR/lib|summary/summaryManagerDelayLoadedModule/index.js|summary/summaryManagerDelayLoadedModuleStub.js"
-  "connection-telemetry|$CR/lib|connectionTelemetry.js|connectionTelemetryStub.js"
-  "signal-telemetry|$CR/lib|signalTelemetryProcessing.js|signalTelemetryProcessingStub.js"
   "blob-manager|$CR/lib|blobManager/index.js|blobManager/blobManagerStub.js"
   "gc|$CR/lib|gc/garbageCollection.js|gc/garbageCollectionStub.js"
   "summarizer-node|$CR/lib|summary/summarizerNode/summarizerNodeWithGc.js|summary/summarizerNode/summarizerNodeWithGcStub.js"
   "summary-collection|$CR/lib|summary/summaryCollection.js|summary/summaryCollectionStub.js"
-  "batch-tracker|$CR/lib|batchTracker.js|batchTrackerStub.js"
-  "sampled-telemetry|$TU/lib|sampledTelemetryHelper.js|sampledTelemetryHelperStub.js"
 )
+# NOTE: telemetry stubs (connection-telemetry, signal-telemetry, batch-tracker, sampled-telemetry)
+# were intentionally removed — telemetry is not stubbed out of this bundle (project decision).
 
 row_for() { local id="$1"; for r in "${MAP[@]}"; do [ "${r%%|*}" = "$id" ] && { echo "$r"; return 0; }; done; return 1; }
 

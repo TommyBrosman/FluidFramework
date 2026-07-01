@@ -146,32 +146,13 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
-		// TRUE removal of op-performance telemetry. `connectionTelemetry.js`'s `ReportOpPerfTelemetry`
-		// wires up `OpPerfTelemetry`, which only emits op round-trip / connection performance telemetry
-		// and has no effect on op processing or runtime state. Replacing the whole module with the no-op
-		// stub shipped by container-runtime drops the `OpPerfTelemetry` implementation from the chunk.
-		new webpack.NormalModuleReplacementPlugin(
-			/[\\/]connectionTelemetry\.js$/,
-			(resource: { request: string }) => {
-				resource.request = resource.request.replace(
-					/connectionTelemetry\.js$/,
-					"connectionTelemetryStub.js",
-				);
-			},
-		),
-		// TRUE removal of broadcast-signal latency telemetry. `SignalTelemetryManager` only measures
-		// signal round-trip latency; its sole mutation to outbound signals is an optional telemetry
-		// sequence-number stamp that is not used for delivery or ordering. Replacing the module with the
-		// no-op stub drops the telemetry implementation without changing signal behavior.
-		new webpack.NormalModuleReplacementPlugin(
-			/[\\/]signalTelemetryProcessing\.js$/,
-			(resource: { request: string }) => {
-				resource.request = resource.request.replace(
-					/signalTelemetryProcessing\.js$/,
-					"signalTelemetryProcessingStub.js",
-				);
-			},
-		),
+		// NOTE: Telemetry is intentionally NOT stubbed out. Op-performance telemetry
+		// (`connectionTelemetry.js`), broadcast-signal latency telemetry
+		// (`signalTelemetryProcessing.js`), batch-size telemetry (`batchTracker.js`), and the
+		// per-DDS sampled-telemetry helper (`sampledTelemetryHelper.js`) all remain in the bundle.
+		// Per project decision, observability is considered valuable and is off-limits for bundle
+		// reductions, even though these modules are pure telemetry (the combined savings were only
+		// ~11.4 KB parse / ~2.4 KB gzip). Do not re-add telemetry stub-polyfills.
 		// TRUE removal of attachment-blob support. This app uses only SharedString / SharedDirectory and
 		// never creates or references attachment blobs, so the BlobManager implementation (and its
 		// snapshot/summary helpers) is dead weight. Replacing `blobManager/index.js` with the stub
@@ -234,32 +215,8 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
-		// TRUE removal of two pure-telemetry helpers with zero functional effect.
-		// `batchTracker.js` (`BatchTracker`/`BindBatchTracker`) only subscribes to batchBegin/
-		// batchEnd and calls logger.sendPerformanceEvent; `sampledTelemetryHelper.js`
-		// (`SampledTelemetryHelper`) is a timing wrapper whose `measure(cb)` executes and returns
-		// `cb()` — the measured code, not the helper, carries all behavior. Replacing them with a
-		// no-op BindBatchTracker and a passthrough `measure` preserves runtime behavior exactly
-		// while dropping the sampling/aggregation/logging code. The "Stub" infix keeps each regex
-		// from matching its own replacement module.
-		new webpack.NormalModuleReplacementPlugin(
-			/[\\/]batchTracker\.js$/,
-			(resource: { request: string }) => {
-				resource.request = resource.request.replace(
-					/batchTracker\.js$/,
-					"batchTrackerStub.js",
-				);
-			},
-		),
-		new webpack.NormalModuleReplacementPlugin(
-			/[\\/]sampledTelemetryHelper\.js$/,
-			(resource: { request: string }) => {
-				resource.request = resource.request.replace(
-					/sampledTelemetryHelper\.js$/,
-					"sampledTelemetryHelperStub.js",
-				);
-			},
-		),
+		// NOTE: batch-size telemetry (`batchTracker.js`) and the per-DDS sampled-telemetry helper
+		// (`sampledTelemetryHelper.js`) are intentionally NOT stubbed — see the telemetry note above.
 		// Mirrors the DefinePlugin constants used by the external ship build so
 		// the same code paths are eliminated by Terser DCE here. Most libraries
 		// only strip dev-only warnings when `process.env.NODE_ENV === "production"`
