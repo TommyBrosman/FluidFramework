@@ -215,6 +215,24 @@ const config: webpack.Configuration = {
 				);
 			},
 		),
+		// TRUE removal of the SharedMap implementation (`map.js` + `mapKernel.js`). Aqueduct's
+		// `DataObjectFactory` unconditionally registers the SharedMap factory
+		// (`SharedMap.getFactory()`, dataObjectFactory.ts) behind a stale "remove in 0.10" TODO, purely so a
+		// pre-0.10 document whose DataObject root channel was a `SharedMap` can still load. That registration
+		// is the SOLE edge pinning SharedMap; this app uses only `SharedDirectory` (which has its own kernel
+		// and never imports `mapKernel`). Because `@fluidframework/map` is `sideEffects:false`, replacing
+		// `mapFactory.js` with the stub — which keeps `MapFactory.Type` / `Attributes` and the `SharedMap`
+		// kind so the registration stays faithful, but drops the `./map.js` import — tree-shakes
+		// `map.js` (SharedMap) + `mapKernel.js` out of the single chunk (~9 KB parsed). The stub's
+		// `create` / `load` throw, which only happens if the app creates a SharedMap or loads a legacy
+		// SharedMap-rooted document (loud, non-corrupting) — neither occurs here. The "Stub" infix keeps this
+		// regex from matching the replacement module itself.
+		new webpack.NormalModuleReplacementPlugin(
+			/[\\/]mapFactory\.js$/,
+			(resource: { request: string }) => {
+				resource.request = resource.request.replace(/mapFactory\.js$/, "mapFactoryStub.js");
+			},
+		),
 		// NOTE: batch-size telemetry (`batchTracker.js`) and the per-DDS sampled-telemetry helper
 		// (`sampledTelemetryHelper.js`) are intentionally NOT stubbed — see the telemetry note above.
 		// Mirrors the DefinePlugin constants used by the external ship build so

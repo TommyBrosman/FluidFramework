@@ -346,10 +346,55 @@ that introduces a seam).
   never opens a document whose DataObject root was a `SharedMap` — i.e., all documents
   were created by DataObject ≥ 0.10 (which uses `SharedDirectory`). Fail mode: loading a
   legacy SharedMap-rooted doc throws "unknown channel type" — **loud, not corrupting**.
-- **Proposal.** *Candidate — above the 5 KB bar and the cleanest of the new levers* (no
-  deep refactor; the map package already tree-shakes, only the aqueduct edge pins it).
-  Gated on a "no pre-0.10 SharedMap-rooted documents" precondition — plausible for a
-  greenfield mobile deployment.
+- **Status — IMPLEMENTED (−8.9 KB parsed, 488,566 → 479,659 B emitted asset).** Shipped as
+  `packages/dds/map/src/mapFactoryStub.ts` + a `NormalModuleReplacementPlugin`
+  (`mapFactory.js` → `mapFactoryStub.js`) in the scenario `webpack.config.cts`,
+  drift-guarded by `packages/dds/map/src/test/mocha/mapFactoryStub.spec.ts`. The
+  stub keeps `MapFactory.Type` / `Attributes` and the `SharedMap` kind (so aqueduct's
+  registration and factory-dedup check stay faithful) but drops the `./map.js` import,
+  tree-shaking `map.js` (SharedMap) + `mapKernel.js` out of the single chunk. The
+  measured parsed-size delta (~8.9 KB, whole-asset) matches the ~9.3 KB parsed estimate
+  above (per-module analyzer attribution). Gated on the
+  "no pre-0.10 SharedMap-rooted documents" precondition; `create`/`load` throw (loud,
+  non-corrupting) if a SharedMap channel is ever materialized. This was the cleanest of
+  the new levers (no deep refactor; the map package already tree-shakes, only the
+  aqueduct edge pinned it).
+- **Validation — asymmetric vs. the other stubs; read before trusting.** The other
+  scenario stubs are regression-tested by `polyfill-swap.sh`: physically swap the stub
+  into the real `lib/*.js`, then run the affected package's own suite to prove the stub
+  is *behavior-faithful* on every-client paths. **That method cannot validate F24** — it
+  only lights up failures. This was measured empirically: swapping the compiled stub over
+  the real `lib/mapFactory.js` (the swap propagates through the symlinked workspace to all
+  dependents) and running each affected suite gives:
+  - `@fluidframework/map` own suite: **562 passing / 324 failing** — every failure is the
+    stub `create`/`load` throw; all `SharedMap` tests fail, all `SharedDirectory` tests pass.
+  - `dds-interceptions`: **12 passing / 1 failing** — only the `SharedMap`-interception
+    test (direct `create`); the `SharedDirectory` and `SharedString` interception tests pass.
+  - `undo-redo`: **5 passing / 0 failing** — no direct `SharedMap` instantiation.
+  - `fluid-static`: **6 passing / 0 failing** — `SharedMap` referenced only at
+    type/registry level, never materialized.
+  - `test-end-to-end-tests` / `service-clients` (not run — package unbuilt, several need a
+    driver): **37 spec files directly call `SharedMap.create`/`getFactory`** (e.g.
+    `mapEndToEndTests`, `stashedOps`, `deRehydrate`, `idCompressor`, `batching`, and the
+    azure/odsp/tinylicious client suites) and would fail the same way.
+
+  The pattern is sharp: the stub breaks **exactly and only** the paths that *materialize* a
+  `SharedMap` channel; anything on the `SharedDirectory` path (which is what
+  `encapsulated-no-tree` uses via `DataObject`) is untouched. So F24's safety rests
+  **entirely on the static precondition** ("this app never materializes a map-typed
+  channel"), verified by
+  code reading (create → `SharedDirectory.create`, `dataObject.ts:69`; load →
+  `getChannel("root")` rehydrates via factory only for legacy SharedMap roots,
+  `dataObject.ts:51-64`), **not** by executing the stubbed bundle. What *is* validated:
+  (a) static reachability — `map.ts` is reachable only via `mapFactory.ts:15`; (b) the
+  measured −8.9 KB size delta; (c) `mapFactoryStub.spec.ts` type/const drift-guard. What
+  is **not** validated: a runtime exercise of the stubbed scenario bundle. Because the
+  webpack replacement is scoped to this scenario only (the published `@fluidframework/map`
+  still exports the real `mapFactory.js`; nothing else imports the stub), the repo's
+  normal test suite is unaffected — but that also means the usual regression net does not
+  cover this lever. If stronger assurance is wanted, add a runtime test that loads the
+  stubbed bundle and drives SharedDirectory/SharedString ops, asserting the stub's throw
+  paths are never hit.
 
 ## Summary matrix
 
@@ -378,7 +423,7 @@ that introduces a seam).
 | F21 | Return before fully loaded | Config-driven | Yes | config | no change |
 | F22 | E2E message timing | Unconditional | Yes | **off-limits (telemetry)** | do not remove |
 | F23 | Transitive deps (lz4js) | With F4 | Yes | stub (w/ F4) | bundle w/ F4 |
-| F24 | Aqueduct SharedMap legacy factory | Registered always | Yes (~9.3 KB) | **stub (no legacy SharedMap-rooted docs)** | **candidate** — cleanest; map already tree-shakes |
+| F24 | Aqueduct SharedMap legacy factory | Registered always | **Already stubbed** | stub (done) | — done (−8.9 KB; precondition: no legacy SharedMap-rooted docs) |
 
 ## Proposal for code changes
 
@@ -391,17 +436,22 @@ project memory). **No telemetry** (F22) is in scope.
 ### Tier 0 — already implemented (reference only)
 - **F16 GC** and **F17 summarizer-election** are shipped stubs (−20.9 KB and
   −15.6 KB parsed). No new work; listed so the matrix is complete.
+- **F24 Aqueduct SharedMap legacy-compat factory** — implemented as
+  `packages/dds/map/src/mapFactoryStub.ts` (keeps `MapFactory.Type` / `Attributes`
+  and the `SharedMap` kind so aqueduct's unconditional
+  `sharedObjects.push(SharedMap.getFactory())` registration stays faithful, but
+  drops the `./map.js` import). Because `@fluidframework/map` is `sideEffects:false`,
+  severing that one import tree-shakes `map.js` (SharedMap) + `mapKernel.js` out of
+  the bundle. Wired via a `NormalModuleReplacementPlugin` (`mapFactory.js` →
+  `mapFactoryStub.js`) in the scenario `webpack.config.cts`; drift-guarded by
+  `mapFactoryStub.spec.ts` (`requireAssignableTo` type tests + Type/Attributes
+  parity + throw-on-create/load). Measured reduction: **−8.9 KB** parsed
+  (488,566 → 479,659 B emitted asset) on the single-chunk metric. Gated on the "no pre-0.10
+  SharedMap-rooted documents" precondition; loud fail mode
+  ("unknown channel type" / stub throws) if violated.
 
 ### Tier 1 — new gated stubs worth prototyping
-1. **F24 — Aqueduct SharedMap legacy-compat factory, behind a "no pre-0.10
-   SharedMap-rooted documents" precondition.** Drop the
-   `sharedObjects.push(SharedMap.getFactory())` registration
-   (`dataObjectFactory.ts:84`) — via an app-level `DataObjectFactory` or a
-   `SharedMap`/`mapFactory` stub. Since `@fluidframework/map` is `sideEffects:false`,
-   `SharedMap` + `mapKernel` + `mapFactory` (~9.3 KB parsed) then tree-shake away.
-   **Cleanest new lever** (no deep refactor). Loud fail mode ("unknown channel type")
-   if a legacy SharedMap-rooted doc is opened.
-2. **F4+F5+F23 — compression/chunking + `lz4js`, behind a session-wide "no lz4
+1. **F4+F5+F23 — compression/chunking + `lz4js`, behind a session-wide "no lz4
    compression" precondition.** Add `opCompressorStub` (throwing `compressBatch`),
    `opDecompressorStub` (**throws on encountering any compressed envelope** so a
    violated precondition fails loudly rather than corrupting data), and an `lz4js`
@@ -409,7 +459,7 @@ project memory). **No telemetry** (F22) is in scope.
    correctness — only valid if *no client in the collaboration* compresses. Requires
    explicit product sign-off; document as a new "Root" in `POLYFILL_VALIDITY.md`
    analogous to the blob/no-attachment precondition. Est. ~5–6 KB parsed.
-3. **F8 — `serializedStateManager` stub, behind a "no offline serialize/rehydrate"
+2. **F8 — `serializedStateManager` stub, behind a "no offline serialize/rehydrate"
    precondition.** No-op manager (dummy `fetchSnapshot`, throwing
    `getPendingLocalState`, no background refresh). Cross-check against the prior
    `serializedStateManager` offline analysis already in
@@ -418,10 +468,10 @@ project memory). **No telemetry** (F22) is in scope.
    −4,259 B — below the 5 KB bar; kept here for completeness.*
 
 ### Tier 2 — config, not code (no bundle change)
-4. **F13 heartbeats** — ask the service to set `noopTimeFrequency`/
+3. **F13 heartbeats** — ask the service to set `noopTimeFrequency`/
    `noopCountFrequency = +Infinity` for this client class instead of stubbing
    `NoopHeuristic` (server-visible behavior). 
-5. **F21 return-before-loaded** — pass the desired `IContainerLoadMode`; no code
+4. **F21 return-before-loaded** — pass the desired `IContainerLoadMode`; no code
    change.
 
 ### Tier 3 — large refactors (defer)
@@ -479,11 +529,12 @@ explicitly asked.
 3. **Re-verify the Proposal section.** Re-check the Tier 0–3 lists and the
    "Evaluated and rejected as size levers" / "Explicitly not changing" notes against
    the new analysis. Re-confirm size estimates and which candidates clear the **5 KB
-   bar** (currently two: **F24** SharedMap legacy factory ~9.3 KB, and the **F4+F5+F23**
-   compression bundle ~5–6 KB).
-4. **Re-verify the size numbers.** Realized stubs (F16 −20.9 KB, F17 −15.6 KB) and
-   the measured F8 ceiling (−4,259 B parsed) should be re-measured if the underlying
-   modules changed; update `remeasure`/`features` session tables accordingly.
+   bar** (currently one remaining candidate: the **F4+F5+F23** compression bundle
+   ~5–6 KB; **F24** SharedMap legacy factory has since been implemented — see Tier 0).
+4. **Re-verify the size numbers.** Realized stubs (F16 −20.9 KB, F17 −15.6 KB,
+   F24 −8.9 KB) and the measured F8 ceiling (−4,259 B parsed) should be re-measured if
+   the underlying modules changed; update `remeasure`/`features` session tables
+   accordingly.
 
 **Line-number re-anchoring procedure (previous-rev → new-rev).** Line numbers are
 the most fragile part. To rewrite them without re-reading every file from scratch:
