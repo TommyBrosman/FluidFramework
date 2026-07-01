@@ -127,14 +127,50 @@ shape, the code-flow guarantee (with line numbers), and the API-surface argument
           summaryManagerModule.setupSummaryManager({ ... });      // L2341
   ```
 
-- **Why a throwing stub would be WRONG here:** an **interactive** client *does*
-  enter this branch (`capabilities.interactive === true`), so the dynamic import
-  *is* evaluated and `setupSummaryManager` *is* called. Therefore the stub must
-  not throw. Returning `{}` is behaviorally "this client does not participate in
-  summarizer election," which is exactly correct for a client that summarizes
-  server-side (and whose `Summarizer` is itself stubbed, §1.2).
+- **The true gate.** The condition inlined at L2329-2330 is exactly
+  `SummarizerClientElection.clientDetailsPermitElection` (`summarizerClientElection.ts`
+  L141-142):
+
+  ```ts
+  details.capabilities.interactive || details.type === summarizerClientType
+  ```
+
+  Because this is the `else if` after `if (this.isSummarizerClient)` (L2296) and
+  `isSummarizerClient === (clientDetails.type === summarizerClientType)` (L1746),
+  the else-branch already guarantees `type !== summarizerClientType`, so the
+  **second disjunct is statically dead here**. The effective gate for constructing
+  a real `SummaryManager` is therefore `!onRequestMode && interactive`.
+
+- **What the real machinery does (why empty is not trivially safe).** On an
+  interactive, non-summarizer, non-on-request client, `setupSummaryManager` builds
+  the election (`OrderedClientElection` → `SummarizerClientElection`) and a
+  `SummaryManager` that, **if this client wins the election, spawns a summarizer
+  container**. This is *client-side (interactive) summarization*. The module's own
+  header says it plainly: these classes "exist so an interactive client can be
+  elected to spawn a summarizer container. A client that summarizes server-side
+  never needs this machinery."
+
+- **Why the stub must be a no-op, not throwing.** An interactive client *does*
+  enter this branch (default `interactive === true`, see §0), so the dynamic import
+  *is* evaluated and `setupSummaryManager` *is* called. A throwing stub would crash
+  normal startup. Hence: no-op.
+
+- **Why returning `{}` is *correct* — and its precise validity scope.** An empty
+  result means this client never participates in election, so it is **never
+  elected and never spawns a summarizer container**. This is a genuine behavioral
+  change, valid **only under a deployment precondition**: summaries must be
+  produced *without* relying on this client's election — i.e. **server-side /
+  non-interactive-summarizer**, or by other (non-stubbed) clients in the session.
+  It is **NOT** valid for a deployment whose summaries depend on client-side
+  election, because suppressing election there suppresses all summarization. This
+  is the same class of consumer-opt-in precondition as the GC stub (§1.7), **not**
+  a universal truth — do not read this stub as "safe for any interactive client."
+  It is coherent with the rest of the bundle because this client's own
+  `Summarizer` is also stubbed (§1.2): the client can neither *be* a summarizer nor
+  *spawn* one, so summarization is necessarily external.
+
 - **Key enabler:** `SummarizerClientElection.clientDetailsPermitElection` was
-  **inlined** into the gate condition (comment at L2325-2327) precisely so the
+  **inlined** into the gate condition (comment at L2326-2328) precisely so the
   gate does not *statically* reference the election machinery. Without that
   inlining, the election module would be a static import edge and could not be
   stubbed away.
@@ -354,9 +390,12 @@ Root A: "client summarizes SERVER-SIDE; never elected summarizer"
    │                [throwing createWatcher/waitSummaryAck require BOTH consumers
    │                 stubbed: Summarizer (1.2) AND election SummaryManager (1.3)]
    │
-   └─► (1.3) election stub             [no-op; interactive clients DO enter the gate
-                                        L2324, so it must not throw; returns {} = "does
-                                        not elect", correct because summary is server-side]
+   └─► (1.3) election stub             [no-op; interactive non-summarizer clients DO
+                                        enter the gate L2324 (effective gate:
+                                        !onRequestMode && interactive), so it must
+                                        not throw; returns {} = "never elects/spawns a
+                                        summarizer". Empty result is correct ONLY under
+                                        Root A (server-side summarization) — see §1.3]
 
 Root B: "id-compression is OFF (default)"      ─► (1.1) id-compressor stub   [independent]
 Root C: "app uses only SharedString/SharedDirectory; no attachment blobs" ─► (1.6) blob-manager stub [independent]
@@ -378,9 +417,15 @@ Root D: "telemetry is optional observability"  ─► (1.4) connection-telemetry
 - **gc (1.7)** omits GC data from summaries. That is only immaterial because
   **(1.2)** makes this client summarize server-side — it never writes a summary,
   so the omitted data is never serialized by this client.
-- **election (1.3)** is not *enabled by* another stub, but it is the reason the
-  summarizer-only branch is genuinely dead: with the election returning `{}` this
-  client never becomes the summarizer, reinforcing Root A at runtime.
+- **election (1.3)** returns an empty `SummaryManagerSetupResult`, so this client
+  never participates in election and never spawns a summarizer container. Its
+  effective gate is `!onRequestMode && interactive` (the inlined
+  `clientDetailsPermitElection`, with the `summarizerClientType` disjunct
+  statically dead in the else-branch), so an interactive client *does* reach it —
+  the stub must be a no-op, not throwing. The empty result is *correct* only
+  because of **Root A**: summaries are produced server-side, so suppressing
+  client-side election removes nothing this client was relied upon to do. Under a
+  client-side-summarization deployment this stub would be invalid (see §1.3).
 
 **Independent stubs** (no cross-dependency): id-compressor (1.1), blob-manager
 (1.6), and all four telemetry stubs (1.4, 1.5, 1.10, 1.11). Each rests only on its
