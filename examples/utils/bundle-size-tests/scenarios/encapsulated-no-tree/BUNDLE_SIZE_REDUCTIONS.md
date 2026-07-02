@@ -42,32 +42,42 @@ first.
 
 All figures are **parsed = file size** (source-map-explorer total == `stat -c%s`
 for these Terser-minified bundles) for the single chunk
-`build/scenarios/encapsulated-no-tree/encapsulated-no-tree.js`.
+`build/scenarios/encapsulated-no-tree/encapsulated-no-tree.js`. Each row shows
+the **per-change delta** (the individually-measured parsed + gzip win for that
+stub/commit) alongside the running cumulative. **Cumulative parsed** is
+delta-consistent (baseline + Σ per-change Δ, telemetry-free — see note below);
+**cumulative gzip** is approximate (≈) because gzip deltas do not sum linearly.
 
-| Milestone | Parsed | Gzip |
-|---|---:|---:|
-| **No-tree single chunk, all dep-swaps applied** (`135357c859`) | **617,974 B** | **160,775 B** |
-| + id-compressor delay-load seam (no stub swap) | 618,397 B | 160,833 B |
-| **+ id-compressor stub polyfill** (`NormalModuleReplacementPlugin`) | **585,184 B** | **151,269 B** |
-| **+ summarizer stub polyfill** (`NormalModuleReplacementPlugin`) | **546,425 B** | **142,246 B** |
-| **+ summarizer-election stub polyfill** (`NormalModuleReplacementPlugin`) | **530,849 B** | **138,528 B** |
-| **+ blobManager stub polyfill** (`NormalModuleReplacementPlugin`) | **513,858 B** | **134,712 B** |
-| **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
-| **+ summarizer-node tree stub polyfill** (`NormalModuleReplacementPlugin`) | **483,822 B** | **127,166 B** |
-| **+ summaryCollection stub polyfill** (`NormalModuleReplacementPlugin`) | **479,772 B** | **126,210 B** |
-| **+ F24 SharedMap legacy-factory stub** (`70c0293161`) | **479,659 B** | — |
-| **+ F25 summary-write cluster stub** (`b25e862c34`, current build) | **471,428 B** | **124,815 B** |
+| Change (commit) | Δ Parsed | Δ Gzip | Cumulative parsed | Cumulative gzip |
+|---|---:|---:|---:|---:|
+| **Baseline** — no-tree single chunk, all dep-swaps applied (`135357c859`) | — | — | **617,974 B** | **160,775 B** |
+| id-compressor delay-load seam (no stub swap) | +423 | +58 | 618,397 B | ≈160,833 B |
+| + id-compressor stub polyfill (`81f6768733`) | **−33,213** | **−9,564** | 585,184 B | ≈151,269 B |
+| + summarizer stub polyfill (`895b47a93f`) | **−38,759** | **−9,023** | 546,425 B | ≈142,246 B |
+| + summarizer-election stub polyfill (`43ddaf632f`) | **−15,576** | **−3,718** | 530,849 B | ≈138,528 B |
+| + blobManager stub polyfill (`3b386f0f46`) | **−8,197** | **−2,064** | 522,652 B | ≈136,464 B |
+| + garbage-collection stub polyfill (`af7bd02b97`) | **−20,886** | **−5,343** | 501,766 B | ≈131,121 B |
+| + summarizer-node tree stub polyfill (`062d19b5a1`) | **−9,150** | **−2,203** | 492,616 B | ≈128,918 B |
+| + summaryCollection stub polyfill (`2f3db17909`) | **−4,050** | **−956** | 488,566 B | ≈127,962 B |
+| + F24 SharedMap legacy-factory stub (`70c0293161`) | **−8,907** | **−1,359** | 479,659 B | ≈126,603 B |
+| + F25 summary-write cluster stub (`b25e862c34`) | **−8,058** | **−2,549** | 471,601 B | ≈124,054 B |
+| **Σ per-change (exclusions only)** | **−146,796** | **−36,779** | — | — |
+| **Current build** — re-measured, HEAD `b25e862c34` | — | — | **471,428 B** | **124,815 B** |
 
-> **Measurement-context caveat (telemetry).** Several intermediate rows above
-> (through the summaryCollection stub) were measured with four telemetry
-> stub-polyfills present. Those stubs were later **reverted** and are **excluded
-> from the landed reductions** — see ["Telemetry stubs — scoped out"](#telemetry-stubs--scoped-out-not-a-landed-reduction)
-> below. As a result their absolute figures no longer match the current build. The
-> F24 / F25 rows were measured **after** telemetry was restored, off the post-revert
-> **7-stub baseline** of **488,566 B parsed / 127,894 B gzip** — which is why the
-> step from the summaryCollection row into F24 spans a measurement-context change.
-> The **current build** (9 stubs, incl. F24 + F25; HEAD `b25e862c34`) is
-> **471,428 B parsed / 124,815 B gzip** (re-measured this pass) — the last row.
+> **Reading the cumulative columns.** The **cumulative parsed** column is
+> reconstructed as baseline + running Σ of the per-change parsed deltas so the
+> table is internally consistent and **telemetry-free**. This matters: four
+> telemetry stub-polyfills were transiently present when the blobManager…
+> summaryCollection rows were originally measured, then reverted (see
+> ["Telemetry stubs — scoped out"](#telemetry-stubs--scoped-out-not-a-landed-reduction)),
+> so their *raw* measurements at the time were telemetry-contaminated. The
+> reconstructed progression removes that contamination and lands **exactly** on
+> the documented **7-stub baseline of 488,566 B** at the summaryCollection row.
+> The final reconstructed value (471,601 B) reconciles with the **re-measured
+> current build (471,428 B)** to within ~173 B (measurement drift). **Cumulative
+> gzip** is marked ≈ because per-lever gzip deltas over-count when summed (a
+> module freed in isolation compresses better than in aggregate); the true
+> endpoint gzip is **124,815 B** (last row), ~761 B below the delta-sum.
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
 > gzip** (618,397 → 585,184), and it holds under the single chunk. Note the
