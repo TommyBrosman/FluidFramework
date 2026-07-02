@@ -1,25 +1,33 @@
-# Bundle-size reductions: `encapsulated-no-tree`
+# Bundle-size reductions: encapsulated bundle (non-tree & tree)
 
-High-level summary of bundle-size reductions for the
-`encapsulated-no-tree` scenario. Companion to the detailed
+High-level summary of bundle-size reductions for the encapsulated bundle
+scenarios. Companion to the detailed
 [BUNDLE_SIZE_FINDINGS.md](BUNDLE_SIZE_FINDINGS.md) and
-[TREE_CHECKOUT_ANALYSIS.md](TREE_CHECKOUT_ANALYSIS.md). This doc answers two
-questions:
+[TREE_CHECKOUT_ANALYSIS.md](TREE_CHECKOUT_ANALYSIS.md).
 
-1. **What known reductions (>1 KB parsed) have been made?** — with commit
-   hash and measured bundle deltas (parsed **and** gzip), split into **non-tree**
-   (in scope) and **tree** (out of scope, historical), each with a section total.
-2. **What promising reductions are still on the table?** — with approximate
-   impact and level-of-effort estimate.
+This file tracks **all** reductions — both **non-tree** and **tree** — in one
+place, split into two top-level parts:
 
-Both sections are ordered **descending by reduction size**.
+- **[Part 1 — Non-tree reductions](#part-1--non-tree-reductions)** — in scope for
+  the current `encapsulated-no-tree` target (the mobile single-chunk bundle).
+- **[Part 2 — Tree reductions](#part-2--tree-reductions)** — `@fluidframework/tree`
+  reductions, **out of scope** now that tree is removed from the
+  `encapsulated-no-tree` bundle, retained for the historical record and for
+  with-tree / asymmetric consumers. Re-measurable against the restored
+  `../encapsulated-with-shared-tree` scenario.
 
-## Bundle baseline / current state
+Within each part, both **landed** reductions (with commit hash and measured
+parsed + gzip deltas) and **promising / not-yet-landed** reductions (with
+approximate impact and level-of-effort) are listed, ordered **descending by
+reduction size**. The shared measurement harness and baseline are described
+first.
+
+## Scenario context & baseline (non-tree)
 
 > **Scope change (this branch): tree removed.** The scenario was renamed from
 > `encapsulated-with-shared-tree` to `encapsulated-no-tree` and the
 > `@fluidframework/tree/legacy` re-export was deleted from `src/index.ts`. All
-> `dds/tree`-specific reductions (see §1b) are therefore **out of scope**
+> `dds/tree`-specific reductions (see Part 2) are therefore **out of scope**
 > for the current target — they shrank tree code that is no longer in the bundle.
 > They are retained for the historical record only.
 
@@ -133,6 +141,12 @@ removals together reach ~104 KB — under half the 266 KB target. **The target i
 reachable on non-tree FF code while preserving the app's required API surface.** See
 the true-removal ledger and research notes below.
 
+## Part 1 — Non-tree reductions
+
+> **In scope** for the current `encapsulated-no-tree` target. Landed non-tree
+> reductions total **−166,421 B parsed / −43,231 B gzip** (see "Known reductions
+> made" below).
+
 ### True-removal ledger (single chunk, non-tree) — needs decisions
 
 Every large remaining lever is gated on a product/compat/scope decision, not on
@@ -181,7 +195,124 @@ engineering. Ordered by size:
 > `options.enableOfflineLoad !== false`), so nothing here tree-shakes without that refactor
 > plus a consumer opt-out.
 
-### Excluding id-compressor (~33 KB) from a single chunk — IMPLEMENTED
+### Known reductions made (>1 KB parsed)
+
+All commit hashes are on `tbrosman/claude-shrink-bundle` (and its parent
+`tbrosman/experiment-shrink-bundle`). Deltas are the values measured **at the
+time each change landed** (or, where noted, re-measured against the current
+build). This part lists the **non-tree** landed reductions (in scope for the
+current `encapsulated-no-tree` target); the **tree** landed reductions are in
+[Part 2](#part-2--tree-reductions). Rows are ordered descending by parsed
+reduction and carry a **total in both parsed and gzip bytes**.
+
+> **Measurement contexts (why totals compose).** Two harnesses were used over the
+> life of the branch:
+> - **Dep-swaps** (the dependency-swap table below) were measured against the older
+>   `encapsulated-with-shared-tree` scenario. They replace *non-tree* npm deps
+>   with in-tree code, so their byte deltas **transfer** to the no-tree bundle.
+> - **Build-time exclusions** (the stub-polyfill table below) and the **tree
+>   reductions** (Part 2) were measured against their respective scenarios at
+>   landing time.
+>
+> The no-tree stub-polyfill journey has an authoritative ground-truth anchor: the
+> dep-swap baseline **617,974 B parsed / 160,775 B gzip** (`135357c859`) →
+> current build **471,428 B parsed / 124,815 B gzip** (re-measured this pass;
+> HEAD `b25e862c34`). See the milestone table under "Ground-truth no-tree
+> measurements" above.
+
+#### Detail: dependency swaps + build-time exclusions
+
+##### Dependency swaps (npm polyfill → in-tree code)
+
+Measured against `encapsulated-with-shared-tree` at landing; deltas transfer to
+the no-tree bundle (all changes are in non-tree packages).
+
+| Commit | Change | Parsed Δ | Gzip Δ |
+|--------|--------|---------:|-------:|
+| `da2468bdfc` | **Replace `debug` (npm)** with in-tree `minimalDebug.ts` (~190 lines) in `container-loader`, used solely by `DebugLogger`. Replicates `debug` v4.4 browser semantics (`localStorage.debug`/`DEBUG` + `process.env.DEBUG`, glob namespace matching, `-` skips, `.enabled` get/set, `.extend`, static `.log`). Drops `debug` (4,669 B) + transitive `ms` (1,402 B); preserves the `localStorage.debug = "fluid:*"` partner diagnostic. | **−5,010** | **−1,925** |
+| `80571ad8fe` | **Replace `events` (npm) polyfill** with in-tree `EventEmitter` (~150 lines, `WeakMap`-backed, fires `newListener`/`removeListener`). Also drops `events_pkg` import in container-loader `quorum.ts`. | **−4,464** | **−1,223** |
+| `dde412e121` | **Replace `path-browserify`** with ~35 lines of inline posix path helpers in `dds/map` `directory.ts` (full `..`/`.`/multi-slash semantics). | **−3,590** | **−1,332** |
+| `be4b57addd` | **`importHelpers` + `tslib` — 4 non-tree packages** (container-runtime, container-loader, sequence, shared-object-base; 6 files total). Broken down per package below. | **−3,314** | **−853** |
+| `004d76ec6c` | **Replace `double-ended-queue` (npm)** with in-tree `Deque<T>` (~80 lines, array-backed w/ head index, amortized O(1) shift). | **−2,157** | **−621** |
+| `ec4c2cd96f` | **Replace `base64-js` (npm)** with `btoa`/`atob` inline helpers in `bufferBrowser.ts` (chunked via `String.fromCharCode.apply` to dodge call-stack limit). | **−1,090** | **−498** |
+| **Dep-swap subtotal** | **6 commits** | **−19,625** | **−6,452** |
+
+##### Build-time exclusions (stub polyfills)
+
+Whole subsystems this mobile client does not need, severed at a replaceable
+module seam via `NormalModuleReplacementPlugin` in the scenario
+`webpack.config.cts`. Each is a **true removal** that holds under the single
+chunk (`maxChunks: 1`), not deferral. Measured against `encapsulated-no-tree`.
+Each has a detailed section below.
+
+| Commit | Change | Parsed Δ | Gzip Δ |
+|--------|--------|---------:|-------:|
+| `895b47a93f` | **Summarizer** — exclude client-side `Summarizer` / `RunningSummarizer` (`summaryDelayLoadedModule`). Client summarizes server-side; public names preserved as throwing stubs. | **−38,759** | **−9,023** |
+| `81f6768733` | **id-compressor** — exclude `createIdCompressor` subtree + `@tylerbu/sorted-btree-es6`. Off by default; delay-loaded leaf swapped for a throwing stub. | **−33,213** | **−9,564** |
+| `af7bd02b97` | **Garbage collection** — replace `gc/garbageCollection.js` with a valid-empty no-op stub (`shouldRunGC === false`), dropping `gcTelemetry` / `gcUnreferencedStateTracker` / `gcSummaryStateTracker` / `gcConfigs` / `gcReferenceGraphAlgorithm`. | **−20,886** | **−5,343** |
+| `43ddaf632f` | **Summarizer election / `SummaryManager`** — extract election + `SummaryManager` into a delay-loaded leaf; app swaps a **no-op** `setupSummaryManager` stub (returns `{}` == "does not elect"). | **−15,576** | **−3,718** |
+| `062d19b5a1` | **Summarizer-node tracking tree** — replace `summarizerNodeWithGc.js` (drops base `summarizerNode.js` too) with a lifecycle-faithful no-op stub; summarizer-only/GC methods throw. | **−9,150** | **−2,203** |
+| `70c0293161` | **F24 — Aqueduct `SharedMap` legacy factory** — swap `mapFactory.js` for a stub that keeps `MapFactory.Type`/`Attributes` + the `SharedMap` kind but drops the `./map.js` import, tree-shaking `map.js` + `mapKernel.js`. _(gzip re-measured this pass: 480,335 → 471,428 parsed / 126,174 → 124,815 gzip.)_ | **−8,907** | **−1,359** |
+| `3b386f0f46` | **BlobManager** — replace `blobManager/index.js` with a valid-empty stub (empty summary tree + empty GC data on always-run paths; `createBlob`/`getBlob` throw). App never uses attachment blobs. | **−8,197** | **−2,064** |
+| `b25e862c34` | **F25 — summary-write cluster** — extract the `ISummarizerInternalsProvider` write path (`submitSummary` / `refreshLatestSummaryAck` / `summarize` helpers) into `summary/summaryInternals.js`; swap it for a throwing stub. | **−8,058** | **−2,549** |
+| `2f3db17909` | **`SummaryCollection`** — replace `summary/summaryCollection.js` with a no-op event-emitter stub; summarizer-only `createWatcher`/`waitSummaryAck` throw (never reached). | **−4,050** | **−956** |
+| **Exclusion subtotal** | **9 commits** | **−146,796** | **−36,779** |
+
+> **Reconciliation.** The exclusion subtotal (sum of individually-measured
+> deltas, **−146,796 parsed / −36,779 gzip**) agrees with the ground-truth
+> no-tree journey **617,974 → 471,428 parsed (−146,546) / 160,775 → 124,815 gzip
+> (−35,960)** to within ~250 B parsed / ~820 B gzip. The small gap is
+> measurement-context drift: the id-compressor "before" was the delay-load seam
+> (618,397 B, not 617,974 B), and several intermediate rows in the milestone
+> table were measured with the since-removed telemetry stubs present. The
+> ground-truth journey is authoritative for the absolute; the per-lever deltas
+> are authoritative for attributing the win to each commit.
+
+##### Non-tree landed total
+
+| Group | Parsed Δ | Gzip Δ |
+|-------|---------:|-------:|
+| Dependency swaps (above) | −19,625 | −6,452 |
+| Build-time exclusions (above) | −146,796 | −36,779 |
+| **Non-tree total** | **−166,421** | **−43,231** |
+
+### `importHelpers` broken down by package
+
+The `dds/tree` rollout (`a636e62391`, **−9,466 B**; a **tree** reduction, see
+[Part 2](#part-2--tree-reductions)) was measured standalone. The follow-up
+commit `be4b57addd` (a **non-tree** dep-swap, in the dependency-swap table above)
+enabled `importHelpers` for **4 packages / 6 files in a single commit**, measured
+only as a combined **−3,314 B / −853 gzip**.
+
+All 6 files carry a **byte-identical private-field helper block** — the
+commit confirms the dedup count went 6×→1× for each of `Private method is
+not writable`, `Private accessor was defined without a getter`, and
+`Cannot read/write private member`. Because the blocks are identical, the
+combined saving splits proportionally by file count:
+
+| Package | Files (helpers deduped) | Parsed Δ (est.) | Gzip Δ (est.) | Basis |
+|---|---|---:|---:|---|
+| `dds/tree` | 17 modules | **−9,466** | **−621** | **measured** (`a636e62391`) |
+| `loader/container-loader` | `serializedStateManager.ts`, `snapshotRefresher.ts`, `pendingLocalStateStore.ts` (3) | ~−1,657 | ~−426 | est. (3/6 of `be4b57addd`) |
+| `dds/shared-object-base` | `sharedObjectKernel.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
+| `dds/sequence` | `sequenceInterval.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
+| `runtime/container-runtime` | `runCounter.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
+| **`importHelpers` total** | **23 modules / 6 packages** | **−12,780** | **−1,474** | |
+
+Precise per-package figures for the four `be4b57addd` packages would
+require a separate per-package build (revert `importHelpers` for one
+package, rebuild, measure); the per-file-proportional split above is the
+best estimate without that, and is well-grounded because the deduped
+helper block is identical across all six files.
+
+---
+
+### Detailed writeups (implemented non-tree exclusions)
+
+Byte-level rationale for each landed build-time exclusion in the table
+above.
+
+#### Excluding id-compressor (~33 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Implemented via the summarizer-style **stub polyfill** (delay-loaded
 leaf module + build-time module replacement). With the replacement active the
@@ -244,7 +375,7 @@ commits to never enabling it; if it does enable it, the stub throws immediately
 by dependency tests in the consuming/host package (mirroring FF's summarizer
 dependency tests).
 
-### Excluding the summarizer (~38.8 KB) from a single chunk — IMPLEMENTED
+#### Excluding the summarizer (~38.8 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Implemented via the same stub-polyfill mechanism (this is the original
 "summarizer approach"; PRs #27611 stub + #27597 dependency tests). With the
@@ -286,7 +417,7 @@ summarizer, the stub throws immediately (fail fast). PR #27597's dependency test
 enforce that nothing outside the `await import()` seam takes a *runtime* dependency
 on the delay-loaded summarizer internals, keeping the swap runtime-safe.
 
-### Excluding the summarizer election / SummaryManager (~15.6 KB) from a single chunk — IMPLEMENTED
+#### Excluding the summarizer election / SummaryManager (~15.6 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Single chunk drops from **546,425 → 530,849 B parsed** (−15,576) and
 **142,246 → 138,528 B gzip** (−3,718). The directly-removed classes are
@@ -329,7 +460,7 @@ the real module. The full container-runtime suite (957 tests) passes unchanged �
 tests exercise the *real* leaf, not the stub. Appropriate only for clients that do
 not summarize client-side.
 
-### Telemetry stubs — REMOVED (project decision, ~11.4 KB not taken)
+#### Telemetry stubs — REMOVED (project decision, ~11.4 KB not taken)
 
 Four telemetry stub-polyfills were prototyped and briefly landed, then **removed**
 by project decision. They are documented here only so the decision is not
@@ -353,7 +484,7 @@ off-limits as a bundle-reduction lever.** The stubs and their drift specs were
 deleted and the four `NormalModuleReplacementPlugin` blocks removed from
 `webpack.config.cts`. Do not re-propose telemetry stubbing.
 
-### Excluding BlobManager (~8.2 KB) from a single chunk — IMPLEMENTED
+#### Excluding BlobManager (~8.2 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Single chunk drops from **522,055 → 513,858 B parsed** (−8,197) and
 **136,776 → 134,712 B gzip** (−2,064). The whole `blobManager/index.js` module (the
@@ -389,7 +520,7 @@ Compile-time `requireAssignableTo` specs keep the value exports and public metho
 signatures in sync. The full container-runtime suite (960 tests, +3 new) passes —
 the suite still exercises the *real* BlobManager.
 
-### Excluding the summarizer-node tracking tree (~9.2 KB) from a single chunk — IMPLEMENTED
+#### Excluding the summarizer-node tracking tree (~9.2 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Single chunk drops from **492,972 → 483,822 B parsed** (−9,150) and
 **129,369 → 127,166 B gzip** (−2,203). `summary/summarizerNode/summarizerNodeWithGc.js`
@@ -431,7 +562,7 @@ regex `/[\\/]summarizerNodeWithGc\.js$/` does not match the replacement module i
 (`summarizerNodeWithGcStub.js`). The full container-runtime suite (965 tests, +3 new)
 passes — the suite still exercises the *real* summarizer-node tree.
 
-### Excluding garbage collection (~20.9 KB) from a single chunk — IMPLEMENTED
+#### Excluding garbage collection (~20.9 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Single chunk drops from **513,858 → 492,972 B parsed** (−20,886) and
 **134,712 → 129,369 B gzip** (−5,343). `gc/garbageCollection.js` (the `GarbageCollector`
@@ -472,7 +603,7 @@ runtime tests assert the disabled/valid-empty behavior. The regex
 (`garbageCollectionStub.js`). The full container-runtime suite (962 tests, +2 new) passes
 — the suite still exercises the *real* `GarbageCollector`.
 
-### Excluding `SummaryCollection` summary-ack tracking (~4.1 KB) from a single chunk — IMPLEMENTED
+#### Excluding `SummaryCollection` summary-ack tracking (~4.1 KB) from a single chunk — IMPLEMENTED
 
 **Result.** Single chunk drops from **483,822 → 479,772 B parsed** (−4,050) and
 **127,166 → 126,210 B gzip** (−956). `summary/summaryCollection.js` (the
@@ -505,7 +636,7 @@ the throwing summarizer-only methods. The regex `/[\\/]summaryCollection\.js$/` 
 the replacement module itself (`summaryCollectionStub.js`). The full container-runtime suite
 (968 tests, +3 new) passes — the suite still exercises the *real* `SummaryCollection`.
 
-### Pure-telemetry helpers `BatchTracker` + `SampledTelemetryHelper` — REMOVED (see telemetry decision above)
+#### Pure-telemetry helpers `BatchTracker` + `SampledTelemetryHelper` — REMOVED (see telemetry decision above)
 
 These two helpers were briefly stubbed (a no-op `BindBatchTracker` and a
 passthrough `SampledTelemetryHelper.measure`) for ≈2,593 B parsed / ≈753 B gzip,
@@ -513,7 +644,7 @@ then **reverted** along with the op-perf/signal telemetry stubs by project
 decision. See "Telemetry stubs — REMOVED" above. Telemetry is off-limits as a
 bundle-reduction lever; do not re-introduce these stubs.
 
-### Research: where lz4js is used (~4,672 B)
+#### Research: where lz4js is used (~4,672 B)
 
 `lz4js` enters the bundle through **two** static imports in container-runtime's
 `opLifecycle/`:
@@ -543,163 +674,15 @@ summary-blob adapter also use lz4, but those are not in this scenario's graph.)
 
 ---
 
-## 1. Known reductions made (>1 KB parsed)
+### Promising reductions not yet landed (non-tree)
 
-All commit hashes are on `tbrosman/claude-shrink-bundle` (and its parent
-`tbrosman/experiment-shrink-bundle`). Deltas are the values measured **at the
-time each change landed** (or, where noted, re-measured against the current
-build). Reductions are split into **non-tree** (§1a — in scope for the current
-`encapsulated-no-tree` target) and **tree** (§1b — out of scope now that
-`@fluidframework/tree` is removed from the bundle). Each section is ordered
-descending by parsed reduction and carries a **section total in both parsed and
-gzip bytes**.
-
-> **Measurement contexts (why totals compose).** Two harnesses were used over the
-> life of the branch:
-> - **Dep-swaps** (§1a.i) were measured against the older
->   `encapsulated-with-shared-tree` scenario. They replace *non-tree* npm deps
->   with in-tree code, so their byte deltas **transfer** to the no-tree bundle.
-> - **Build-time exclusions** (§1a.ii) and **tree reductions** (§1b) were measured
->   against their respective scenarios at landing time.
->
-> The no-tree stub-polyfill journey has an authoritative ground-truth anchor: the
-> dep-swap baseline **617,974 B parsed / 160,775 B gzip** (`135357c859`) →
-> current build **471,428 B parsed / 124,815 B gzip** (re-measured this pass;
-> HEAD `b25e862c34`). See the milestone table under "Ground-truth no-tree
-> measurements" above.
-
-### 1a. Non-tree reductions (in scope)
-
-#### 1a.i — Dependency swaps (npm polyfill → in-tree code)
-
-Measured against `encapsulated-with-shared-tree` at landing; deltas transfer to
-the no-tree bundle (all changes are in non-tree packages).
-
-| Commit | Change | Parsed Δ | Gzip Δ |
-|--------|--------|---------:|-------:|
-| `da2468bdfc` | **Replace `debug` (npm)** with in-tree `minimalDebug.ts` (~190 lines) in `container-loader`, used solely by `DebugLogger`. Replicates `debug` v4.4 browser semantics (`localStorage.debug`/`DEBUG` + `process.env.DEBUG`, glob namespace matching, `-` skips, `.enabled` get/set, `.extend`, static `.log`). Drops `debug` (4,669 B) + transitive `ms` (1,402 B); preserves the `localStorage.debug = "fluid:*"` partner diagnostic. | **−5,010** | **−1,925** |
-| `80571ad8fe` | **Replace `events` (npm) polyfill** with in-tree `EventEmitter` (~150 lines, `WeakMap`-backed, fires `newListener`/`removeListener`). Also drops `events_pkg` import in container-loader `quorum.ts`. | **−4,464** | **−1,223** |
-| `dde412e121` | **Replace `path-browserify`** with ~35 lines of inline posix path helpers in `dds/map` `directory.ts` (full `..`/`.`/multi-slash semantics). | **−3,590** | **−1,332** |
-| `be4b57addd` | **`importHelpers` + `tslib` — 4 non-tree packages** (container-runtime, container-loader, sequence, shared-object-base; 6 files total). Broken down per package below. | **−3,314** | **−853** |
-| `004d76ec6c` | **Replace `double-ended-queue` (npm)** with in-tree `Deque<T>` (~80 lines, array-backed w/ head index, amortized O(1) shift). | **−2,157** | **−621** |
-| `ec4c2cd96f` | **Replace `base64-js` (npm)** with `btoa`/`atob` inline helpers in `bufferBrowser.ts` (chunked via `String.fromCharCode.apply` to dodge call-stack limit). | **−1,090** | **−498** |
-| **Dep-swap subtotal** | **6 commits** | **−19,625** | **−6,452** |
-
-#### 1a.ii — Build-time exclusions (stub polyfills)
-
-Whole subsystems this mobile client does not need, severed at a replaceable
-module seam via `NormalModuleReplacementPlugin` in the scenario
-`webpack.config.cts`. Each is a **true removal** that holds under the single
-chunk (`maxChunks: 1`), not deferral. Measured against `encapsulated-no-tree`.
-Each has a detailed section below.
-
-| Commit | Change | Parsed Δ | Gzip Δ |
-|--------|--------|---------:|-------:|
-| `895b47a93f` | **Summarizer** — exclude client-side `Summarizer` / `RunningSummarizer` (`summaryDelayLoadedModule`). Client summarizes server-side; public names preserved as throwing stubs. | **−38,759** | **−9,023** |
-| `81f6768733` | **id-compressor** — exclude `createIdCompressor` subtree + `@tylerbu/sorted-btree-es6`. Off by default; delay-loaded leaf swapped for a throwing stub. | **−33,213** | **−9,564** |
-| `af7bd02b97` | **Garbage collection** — replace `gc/garbageCollection.js` with a valid-empty no-op stub (`shouldRunGC === false`), dropping `gcTelemetry` / `gcUnreferencedStateTracker` / `gcSummaryStateTracker` / `gcConfigs` / `gcReferenceGraphAlgorithm`. | **−20,886** | **−5,343** |
-| `43ddaf632f` | **Summarizer election / `SummaryManager`** — extract election + `SummaryManager` into a delay-loaded leaf; app swaps a **no-op** `setupSummaryManager` stub (returns `{}` == "does not elect"). | **−15,576** | **−3,718** |
-| `062d19b5a1` | **Summarizer-node tracking tree** — replace `summarizerNodeWithGc.js` (drops base `summarizerNode.js` too) with a lifecycle-faithful no-op stub; summarizer-only/GC methods throw. | **−9,150** | **−2,203** |
-| `70c0293161` | **F24 — Aqueduct `SharedMap` legacy factory** — swap `mapFactory.js` for a stub that keeps `MapFactory.Type`/`Attributes` + the `SharedMap` kind but drops the `./map.js` import, tree-shaking `map.js` + `mapKernel.js`. _(gzip re-measured this pass: 480,335 → 471,428 parsed / 126,174 → 124,815 gzip.)_ | **−8,907** | **−1,359** |
-| `3b386f0f46` | **BlobManager** — replace `blobManager/index.js` with a valid-empty stub (empty summary tree + empty GC data on always-run paths; `createBlob`/`getBlob` throw). App never uses attachment blobs. | **−8,197** | **−2,064** |
-| `b25e862c34` | **F25 — summary-write cluster** — extract the `ISummarizerInternalsProvider` write path (`submitSummary` / `refreshLatestSummaryAck` / `summarize` helpers) into `summary/summaryInternals.js`; swap it for a throwing stub. | **−8,058** | **−2,549** |
-| `2f3db17909` | **`SummaryCollection`** — replace `summary/summaryCollection.js` with a no-op event-emitter stub; summarizer-only `createWatcher`/`waitSummaryAck` throw (never reached). | **−4,050** | **−956** |
-| **Exclusion subtotal** | **9 commits** | **−146,796** | **−36,779** |
-
-> **Reconciliation.** The exclusion subtotal (sum of individually-measured
-> deltas, **−146,796 parsed / −36,779 gzip**) agrees with the ground-truth
-> no-tree journey **617,974 → 471,428 parsed (−146,546) / 160,775 → 124,815 gzip
-> (−35,960)** to within ~250 B parsed / ~820 B gzip. The small gap is
-> measurement-context drift: the id-compressor "before" was the delay-load seam
-> (618,397 B, not 617,974 B), and several intermediate rows in the milestone
-> table were measured with the since-removed telemetry stubs present. The
-> ground-truth journey is authoritative for the absolute; the per-lever deltas
-> are authoritative for attributing the win to each commit.
-
-#### 1a — Non-tree total
-
-| Group | Parsed Δ | Gzip Δ |
-|-------|---------:|-------:|
-| Dependency swaps (§1a.i) | −19,625 | −6,452 |
-| Build-time exclusions (§1a.ii) | −146,796 | −36,779 |
-| **Non-tree total** | **−166,421** | **−43,231** |
-
-### 1b. Tree reductions (out of scope — historical)
-
-> **Cannot be recomputed against the current build.** These shrank
-> `@fluidframework/tree` code that **no longer ships** — the scenario was renamed
-> `encapsulated-with-shared-tree` → `encapsulated-no-tree` (`2c27c80a0d`) and the
-> `@fluidframework/tree/legacy` re-export was deleted from `src/index.ts`. The
-> figures below are therefore the deltas **as measured at landing time against the
-> old `encapsulated-with-shared-tree` scenario**; re-running them against the
-> current no-tree bundle would report 0 (the tree code is gone). They are retained
-> for the historical record only and are **excluded from the non-tree total** and
-> from progress against the current target. To reproduce them, check out the
-> pre-rename revision (`2c27c80a0d^`) and rebuild the with-tree scenario.
-
-| Commit | Change | Parsed Δ | Gzip Δ |
-|--------|--------|---------:|-------:|
-| `f39c28c357` | **TypeBox barrel-import rewrite** — replace `import { Type }` (namespace object, defeats `usedExports`) with named imports of the specific kinds; reconstruct a local `const Type = {…}` so call sites are unchanged. 35 `dds/tree` files. TypeBox: 39,283 → 12,580 B (−68%). | **−25,764** | **−5,541** |
-| `a636e62391` | **`importHelpers` + `tslib` — `dds/tree` only**. Stops `tsc` emitting `__classPrivateFieldGet/Set` / `__esDecorate` / `__runInitializers` inline per file (12–16× duplicated, un-dedupable by `concatenateModules`). 17 `dds/tree` modules collapse to one `tslib` import. | **−9,466** | **−621** |
-| `1517e1b2b7` | **Skip shape-aware chunker on default-policy path** — add `basicOnlyChunkField`/`basicOnlyChunkTree` (policy-free, `BasicChunk`-only) and route the 4 default-policy callers through them. DCEs `uniformChunk.ts` (5,908 → 0 B) + the `Chunker`/shape-inference surface. | **−7,526** | **−3,176** |
-| `4f3f00e408`, `9bd42724a2`, `bf19974e42`, `0160d61ddb` | **Sub-1 KB `treeCheckout` cleanups** (combined) — drop unused `removedRoots` getter + inline `runWithTransactionLabel`; collapse duplicate `applySerializedChange`/`applyChange`; prototype-chain unlocked editor methods in `EditLock`; drop stray `debugger;`. See findings §3. | **−631** | _(not split)_ |
-| **Tree total** | **4 landed reductions** (`b150d4d520` defaultFieldKinds split was reverted) | **−43,387** | **−9,338**¹ |
-
-¹ Tree-total gzip covers the three levers with separately-measured gzip; the
-sub-1 KB `treeCheckout` cleanups (−631 B parsed combined) were not gzip-split.
-
-### `importHelpers` broken down by package
-
-The `dds/tree` rollout (`a636e62391`, **−9,466 B**; a **tree** reduction, §1b)
-was measured standalone. The follow-up commit `be4b57addd` (a **non-tree**
-dep-swap, §1a.i) enabled `importHelpers` for **4 packages / 6 files in a single
-commit**, measured only as a combined **−3,314 B / −853 gzip**.
-
-All 6 files carry a **byte-identical private-field helper block** — the
-commit confirms the dedup count went 6×→1× for each of `Private method is
-not writable`, `Private accessor was defined without a getter`, and
-`Cannot read/write private member`. Because the blocks are identical, the
-combined saving splits proportionally by file count:
-
-| Package | Files (helpers deduped) | Parsed Δ (est.) | Gzip Δ (est.) | Basis |
-|---|---|---:|---:|---|
-| `dds/tree` | 17 modules | **−9,466** | **−621** | **measured** (`a636e62391`) |
-| `loader/container-loader` | `serializedStateManager.ts`, `snapshotRefresher.ts`, `pendingLocalStateStore.ts` (3) | ~−1,657 | ~−426 | est. (3/6 of `be4b57addd`) |
-| `dds/shared-object-base` | `sharedObjectKernel.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
-| `dds/sequence` | `sequenceInterval.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
-| `runtime/container-runtime` | `runCounter.ts` (1) | ~−552 | ~−142 | est. (1/6 of `be4b57addd`) |
-| **`importHelpers` total** | **23 modules / 6 packages** | **−12,780** | **−1,474** | |
-
-Precise per-package figures for the four `be4b57addd` packages would
-require a separate per-package build (revert `importHelpers` for one
-package, rebuild, measure); the per-file-proportional split above is the
-best estimate without that, and is well-grounded because the deduped
-helper block is identical across all six files.
-
----
-
-## 2. Promising reductions not yet landed
-
-Ordered descending by approximate impact. Impact is **for this scenario**
-unless noted; several have a much larger ceiling for asymmetric consumers
-(read-only, no-array, etc.). LOE = level of effort.
+Non-tree levers not yet landed, ordered descending by approximate parsed
+impact. LOE = level of effort.
 
 | Reduction | Approx. impact (parsed) | LOE | Status / notes |
 |---|---:|---|---|
 | **`SharedMap` back-compat in `aqueduct`** — **two** references statically pull `mapFactory.js` → `map.js` → `mapKernel.js`: (1) `dataObjectFactory.ts:84` `sharedObjects.push(SharedMap.getFactory())` (the legacy-channel registration); (2) `dataObject.ts:59` `this.internalRoot.attributes.type === MapFactory.Type` (legacy-masquerade detection). `MapFactory` is hard-coupled to the `SharedMap` impl (its `create`/`loadCore` do `new SharedMapInternal(...)`), so even a bare `MapFactory.Type` reference drags the whole subtree in. | **−9,471 B parsed / −1,432 B gzip (MEASURED)** — paid by **every `DataObject` consumer**, not just this scenario | **Medium / blocked-compat** | **⚠️ OPEN QUESTION — owner decision pending.** Hard number obtained by prototype (both refs decoupled, then reverted): single chunk **483,822 → 474,351 B parsed (−9,471) / 127,166 → 125,734 B gzip (−1,432)**; `map.ts`/`mapKernel.ts`/`mapFactory.ts` leave the bundle entirely. **Removing BOTH refs is required** — decoupling only `dataObject.ts` (inlining the `"https://graph.microsoft.com/types/map"` type string, which is **free + safe** and keeps masquerade detection) yields **0 B** while the factory registration still references `MapFactory`. The **factory registration is the load-bearing one**: dropping it breaks loading documents whose root `DataObject` persisted a `SharedMap` channel (no factory to rehydrate it). The package's own `// TODO: Remove SharedMap factory ... no longer needed in 0.10` flags it. Needs an owner/compat decision (are pre-0.10 SharedMap-DataObject documents still in scope?). Lazy-loading yields **0 B** here (single-chunk merge); only outright deletion removes the bytes. |
-| **Read-only checkout entrypoint** — split `TreeCheckout` so a variant omits `defaultEditBuilder`, dropping the entire write pillar (`sequence-field` + `modularChangeFamily` + `optional-field`). | up to **~70 KB** (read-only consumers only; **0** for read+write) | **Very high** | Surfaced by per-API analysis, **not yet attempted**. Architectural: `TreeCheckout` must expose `editor`/`transaction`/`applyChange` only on the editing variant. Single clean cut point (one import edge). |
-| **`SchemaFactory.array`/`.map` prototype detach (#6)** — make array/map node-kind infra opt-in. | **−11,044** ceiling / −2,830 gzip; **0** if the consumer uses any of `array`/`map`/`arrayRecursive`/`mapRecursive` | **Medium** | Stub-measured. This scenario uses both array and map, so saving here is 0 — documented as the upper bound for asymmetric consumers. |
-| **Closed-kind-set `ModularChangeFamily` monomorphization** — replace runtime `getFieldKind` map dispatch with a build-time closed set so terser can resolve handlers statically. | **~10 KB** ceiling | **Very high** | Research-grade. Correctness, layer-compat, and persisted-format implications. |
-| **F1+F2 branching + revertibles subclass split** — `BranchingTreeCheckout extends TreeCheckout`, paired with a `SharedTree` view-side split so branching is opt-in. | **~9 KB** combined ceiling; **0** without the `SharedTree`-side change | **High** | Cross-cutting public-API impact (`TreeView.fork()`, `TreeBranchAlpha`, `getRevertible`). `SharedTree.view` exposes `fork`/`createSharedBranch` unconditionally today, so both ends must split. |
-| **Further `basicChunk`-path specialization** beyond `1517e1b2b7** — drive remaining dynamically-dead chunk-policy branches to static DCE. | ~1–2 KB residual | **Medium** | `1517e1b2b7` already captured the `uniformChunk` (5.9 KB) win; remaining surface is small. |
-| **Top-level checkout-API split (#9)** — move transactions/branching/alpha methods to a new `@fluidframework/tree/legacy/branching`-style entrypoint. | **−4,702** / −1,172 gzip | **High** | Stub-measured. New public-API entrypoint + refactor 18+ methods to module-level functions + consumer codemod/shims. |
-| **`schemaCompatibilityTester` defer** — skip the open-time stored-schema compat check until first edit/explicit check. | **~4,544 B** | **Medium** | Reached unconditionally during view init; candidate for lazy init for consumers willing to defer the open-time check. |
 | **`lz4js` lazy-load** — defer `OpCompressor`/`OpDecompressor`. | **~4,700 B** | **High / blocked** | Both are eagerly instantiated in `containerRuntime.ts` on the op-processing hot path; lazy-loading injects async boundaries into inbound decompression. |
-| **`chunked-forest/codec` separation** — split the op-wire codec path (reached SharedTree-direct via `forestSummarizer`) from in-memory chunk representation. | **~7 KB** (of the ~14 KB codec subtree) | **Medium-High** | Distinct logical responsibility (wire format vs. in-memory) in the same directory; flagged as "potentially separable," not yet attempted. |
-| **`@tylerbu/sorted-btree-es6` `union`/`decompose` replacement** | **~7 KB** | **High / blocked** | `mergeTupleBTrees` is hot-path compose code; naive merge trades bundle size for runtime perf. |
-| **Module-level helper extraction (F5/F6/F7/F8)** — convert checkout instance methods (labels, raw-change apply, constraints, diagnostics) to free functions in an advanced module. | **~5–8 KB** *with consumer-side changes*; **0** for this scenario | **Low–Medium** | `SchematizingSimpleTreeView` still pulls transaction labels, so this scenario sees 0 until paired with a view-side change. |
-| **`sequence-field` codec V2+V3 pin at build time** — currently both kept for runtime `ClientVersionDispatching`. | **~4.7 KB** | **Medium** | Requires pinning the wire-codec version at build time instead of `MinimumVersionForCollab` runtime selection. |
-| **`ModularChangeFamily` private-method hoist (#8)** | **−1,553** / −204 gzip | **Medium** | Stub-measured; net well below the churn cost (39-method refactor across a 3.2K-line file, loss of `private` encapsulation). |
 
 ### Scenario-level lever (REVERTED — single chunk restored)
 
@@ -838,3 +821,60 @@ already-tabled gated candidates (SharedMap, serializedStateManager-offline, lz4j
   (the READ path, required for load) shares the `SnapshotLegacy.header`/`.body` constants with
   the writer, so the two cannot be separated by a whole-file replacement without a prod refactor
   to split read constants from write logic. Documented, not landed.
+
+## Part 2 — Tree reductions
+
+> **Out of scope** for the current `encapsulated-no-tree` target — these shrank
+> `@fluidframework/tree` code that no longer ships in this scenario (tree was
+> removed in `2c27c80a0d`). They are retained for the historical record and for
+> with-tree / asymmetric consumers, and can be re-measured against the restored
+> [`../encapsulated-with-shared-tree`](../encapsulated-with-shared-tree/) scenario.
+> Landed tree reductions total **−43,387 B parsed / −9,338 B gzip**.
+
+### Landed reductions (tree)
+
+> **Cannot be recomputed against the current build.** These shrank
+> `@fluidframework/tree` code that **no longer ships** — the scenario was renamed
+> `encapsulated-with-shared-tree` → `encapsulated-no-tree` (`2c27c80a0d`) and the
+> `@fluidframework/tree/legacy` re-export was deleted from `src/index.ts`. The
+> figures below are therefore the deltas **as measured at landing time against the
+> old `encapsulated-with-shared-tree` scenario**; re-running them against the
+> current no-tree bundle would report 0 (the tree code is gone). They are retained
+> for the historical record only and are **excluded from the non-tree total** and
+> from progress against the current target. To reproduce them, check out the
+> pre-rename revision (`2c27c80a0d^`) and rebuild the with-tree scenario.
+
+| Commit | Change | Parsed Δ | Gzip Δ |
+|--------|--------|---------:|-------:|
+| `f39c28c357` | **TypeBox barrel-import rewrite** — replace `import { Type }` (namespace object, defeats `usedExports`) with named imports of the specific kinds; reconstruct a local `const Type = {…}` so call sites are unchanged. 35 `dds/tree` files. TypeBox: 39,283 → 12,580 B (−68%). | **−25,764** | **−5,541** |
+| `a636e62391` | **`importHelpers` + `tslib` — `dds/tree` only**. Stops `tsc` emitting `__classPrivateFieldGet/Set` / `__esDecorate` / `__runInitializers` inline per file (12–16× duplicated, un-dedupable by `concatenateModules`). 17 `dds/tree` modules collapse to one `tslib` import. | **−9,466** | **−621** |
+| `1517e1b2b7` | **Skip shape-aware chunker on default-policy path** — add `basicOnlyChunkField`/`basicOnlyChunkTree` (policy-free, `BasicChunk`-only) and route the 4 default-policy callers through them. DCEs `uniformChunk.ts` (5,908 → 0 B) + the `Chunker`/shape-inference surface. | **−7,526** | **−3,176** |
+| `4f3f00e408`, `9bd42724a2`, `bf19974e42`, `0160d61ddb` | **Sub-1 KB `treeCheckout` cleanups** (combined) — drop unused `removedRoots` getter + inline `runWithTransactionLabel`; collapse duplicate `applySerializedChange`/`applyChange`; prototype-chain unlocked editor methods in `EditLock`; drop stray `debugger;`. See findings §3. | **−631** | _(not split)_ |
+| **Tree total** | **4 landed reductions** (`b150d4d520` defaultFieldKinds split was reverted) | **−43,387** | **−9,338**¹ |
+
+¹ Tree-total gzip covers the three levers with separately-measured gzip; the
+sub-1 KB `treeCheckout` cleanups (−631 B parsed combined) were not gzip-split.
+
+### Promising reductions not yet landed (tree)
+
+Tree levers not yet landed. **Out of scope** for the current
+`encapsulated-no-tree` target (tree is no longer in the bundle); retained for
+asymmetric/with-tree consumers and re-measurable against the restored
+`encapsulated-with-shared-tree` scenario. Ordered descending by approximate
+parsed impact (impact is for the with-tree scenario unless noted). LOE = level
+of effort.
+
+| Reduction | Approx. impact (parsed) | LOE | Status / notes |
+|---|---:|---|---|
+| **Read-only checkout entrypoint** — split `TreeCheckout` so a variant omits `defaultEditBuilder`, dropping the entire write pillar (`sequence-field` + `modularChangeFamily` + `optional-field`). | up to **~70 KB** (read-only consumers only; **0** for read+write) | **Very high** | Surfaced by per-API analysis, **not yet attempted**. Architectural: `TreeCheckout` must expose `editor`/`transaction`/`applyChange` only on the editing variant. Single clean cut point (one import edge). |
+| **`SchemaFactory.array`/`.map` prototype detach (#6)** — make array/map node-kind infra opt-in. | **−11,044** ceiling / −2,830 gzip; **0** if the consumer uses any of `array`/`map`/`arrayRecursive`/`mapRecursive` | **Medium** | Stub-measured. This scenario uses both array and map, so saving here is 0 — documented as the upper bound for asymmetric consumers. |
+| **Closed-kind-set `ModularChangeFamily` monomorphization** — replace runtime `getFieldKind` map dispatch with a build-time closed set so terser can resolve handlers statically. | **~10 KB** ceiling | **Very high** | Research-grade. Correctness, layer-compat, and persisted-format implications. |
+| **F1+F2 branching + revertibles subclass split** — `BranchingTreeCheckout extends TreeCheckout`, paired with a `SharedTree` view-side split so branching is opt-in. | **~9 KB** combined ceiling; **0** without the `SharedTree`-side change | **High** | Cross-cutting public-API impact (`TreeView.fork()`, `TreeBranchAlpha`, `getRevertible`). `SharedTree.view` exposes `fork`/`createSharedBranch` unconditionally today, so both ends must split. |
+| **Further `basicChunk`-path specialization** beyond `1517e1b2b7** — drive remaining dynamically-dead chunk-policy branches to static DCE. | ~1–2 KB residual | **Medium** | `1517e1b2b7` already captured the `uniformChunk` (5.9 KB) win; remaining surface is small. |
+| **Top-level checkout-API split (#9)** — move transactions/branching/alpha methods to a new `@fluidframework/tree/legacy/branching`-style entrypoint. | **−4,702** / −1,172 gzip | **High** | Stub-measured. New public-API entrypoint + refactor 18+ methods to module-level functions + consumer codemod/shims. |
+| **`schemaCompatibilityTester` defer** — skip the open-time stored-schema compat check until first edit/explicit check. | **~4,544 B** | **Medium** | Reached unconditionally during view init; candidate for lazy init for consumers willing to defer the open-time check. |
+| **`chunked-forest/codec` separation** — split the op-wire codec path (reached SharedTree-direct via `forestSummarizer`) from in-memory chunk representation. | **~7 KB** (of the ~14 KB codec subtree) | **Medium-High** | Distinct logical responsibility (wire format vs. in-memory) in the same directory; flagged as "potentially separable," not yet attempted. |
+| **`@tylerbu/sorted-btree-es6` `union`/`decompose` replacement** | **~7 KB** | **High / blocked** | `mergeTupleBTrees` is hot-path compose code; naive merge trades bundle size for runtime perf. |
+| **Module-level helper extraction (F5/F6/F7/F8)** — convert checkout instance methods (labels, raw-change apply, constraints, diagnostics) to free functions in an advanced module. | **~5–8 KB** *with consumer-side changes*; **0** for this scenario | **Low–Medium** | `SchematizingSimpleTreeView` still pulls transaction labels, so this scenario sees 0 until paired with a view-side change. |
+| **`sequence-field` codec V2+V3 pin at build time** — currently both kept for runtime `ClientVersionDispatching`. | **~4.7 KB** | **Medium** | Requires pinning the wire-codec version at build time instead of `MinimumVersionForCollab` runtime selection. |
+| **`ModularChangeFamily` private-method hoist (#8)** | **−1,553** / −204 gzip | **Medium** | Stub-measured; net well below the churn cost (39-method refactor across a 3.2K-line file, loss of `private` encapsulation). |
