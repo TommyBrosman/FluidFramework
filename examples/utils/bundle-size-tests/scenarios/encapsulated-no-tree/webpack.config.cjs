@@ -59,6 +59,12 @@ const config = {
 		path: path.resolve(__dirname, "../../build/scenarios/encapsulated-no-tree"),
 	},
 	plugins: [
+		// Replace the delay-loaded summarizer module with a lightweight stub so it is excluded
+		// from the single-file bundle. See src/polyfills/summaryDelayLoadedModuleStub.ts for details.
+		new webpack.NormalModuleReplacementPlugin(
+			/summaryDelayLoadedModule[\\/]index\.js$/,
+			path.resolve(__dirname, "src/polyfills/summaryDelayLoadedModuleStub.ts"),
+		),
 		new webpack.optimize.LimitChunkCountPlugin({
 			maxChunks: 1,
 		}),
