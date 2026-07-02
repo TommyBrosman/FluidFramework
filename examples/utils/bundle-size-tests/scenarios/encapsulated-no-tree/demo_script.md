@@ -12,7 +12,7 @@ This is where we can use [bundleAnalysisRepo](../../../../../build-tools/package
 ## Example change
 
 Say are implementing changes that shrink the bundle in a mobile app that has no dependency on
-the Summarizer because their changes are all made server-side. There are a couple approaches for
+the Summarizer because their summaries are all made server-side. There are a couple approaches for
 removing the Summarizer, such as finding a way to introduce code boundaries that can be statically
 analyzed (for example: making a SummarizerFeature an opaque injectable parameter exposed in the
 API). The "easy" approach is to leverage existing webpack boundaries and polyfill the module.
