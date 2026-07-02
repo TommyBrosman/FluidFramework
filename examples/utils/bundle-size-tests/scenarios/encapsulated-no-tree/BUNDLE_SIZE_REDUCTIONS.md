@@ -768,18 +768,6 @@ Central runtime/loader plumbing (`containerRuntime.ts` 53.6 KB,
 amenable to package-level lazy-loading without injecting async boundaries
 into op processing. See findings §5 and TREE_CHECKOUT_ANALYSIS §7.
 
-- **`dds/merge-tree` exports-granularity audit (N7)** for
-  `Marker`/`ReferenceType`/`refGetTileLabels` — **audited, 0 B realizable.**
-  The headline "~130 KB" was the full merge-tree (92,732 B) + sequence
-  (40,005 B) graph, pulled into this scenario by `SharedString` /
-  `createOverlappingIntervalsIndex`, not by these three symbols. Removing
-  the three from the entry moved the bundle **−53 B** (noise). Imported
-  alone they pull only **9,250 B** of merge-tree (0 B sequence); the enum +
-  function are **374 B** and already shake cleanly, while `Marker`'s
-  **~8,876 B** is real segment-class coupling (`localReference.ts`,
-  `mergeTreeNodes.ts`, …) that a barrel/`exports` reshape cannot break.
-  See findings §5 (N7).
-
 ### Investigated this session — REJECTED (load-bearing / used)
 
 - **Sequence interval collections (~28 KB: `intervalCollection.ts` 15.6 KB +
