@@ -55,20 +55,18 @@ for these Terser-minified bundles) for the single chunk
 | **+ garbage-collection stub polyfill** (`NormalModuleReplacementPlugin`) | **492,972 B** | **129,369 B** |
 | **+ summarizer-node tree stub polyfill** (`NormalModuleReplacementPlugin`) | **483,822 B** | **127,166 B** |
 | **+ summaryCollection stub polyfill** (`NormalModuleReplacementPlugin`) | **479,772 B** | **126,210 B** |
-| **− telemetry stubs REMOVED (7-stub baseline, telemetry restored)** | **488,566 B** | **127,894 B** |
 | **+ F24 SharedMap legacy-factory stub** (`70c0293161`) | **479,659 B** | — |
 | **+ F25 summary-write cluster stub** (`b25e862c34`, current build) | **471,428 B** | **124,815 B** |
 
-> **Telemetry stub-polyfills were removed by project decision.** Four earlier
-> telemetry stubs (op-perf `connectionTelemetry`, `signalTelemetryProcessing`,
-> `batchTracker`, per-DDS `sampledTelemetryHelper`) once appeared in this table
-> (−8,794 B then −2,593 B). They deleted real observability signals for only
-> ~11,387 B parsed / ~2,437 B gzip combined, so **telemetry is off-limits for
-> bundle reductions** and the stubs were reverted. Because several intermediate
-> rows above were measured with the op-perf/signal telemetry stubs present, their
-> absolute figures no longer match the current build. The **7-stub baseline**
-> (telemetry restored, before F24/F25) is **488,566 B parsed / 127,894 B gzip**;
-> the **current build** (9 stubs, incl. F24 + F25; HEAD `b25e862c34`) is
+> **Measurement-context caveat (telemetry).** Several intermediate rows above
+> (through the summaryCollection stub) were measured with four telemetry
+> stub-polyfills present. Those stubs were later **reverted** and are **excluded
+> from the landed reductions** — see ["Telemetry stubs — scoped out"](#telemetry-stubs--scoped-out-not-a-landed-reduction)
+> below. As a result their absolute figures no longer match the current build. The
+> F24 / F25 rows were measured **after** telemetry was restored, off the post-revert
+> **7-stub baseline** of **488,566 B parsed / 127,894 B gzip** — which is why the
+> step from the summaryCollection row into F24 spans a measurement-context change.
+> The **current build** (9 stubs, incl. F24 + F25; HEAD `b25e862c34`) is
 > **471,428 B parsed / 124,815 B gzip** (re-measured this pass) — the last row.
 
 > **The id-compressor stub polyfill is a TRUE removal of −33,213 B parsed / −9,564 B
@@ -84,6 +82,26 @@ for these Terser-minified bundles) for the single chunk
 > the deferred bytes still ship, and chunk-splitting overhead made the total
 > *larger* (split total 621,343 B vs single-chunk 617,974 B). It was reverted in
 > `135357c859`.
+
+### Telemetry stubs — scoped out (not a landed reduction)
+
+**We are scoping telemetry reductions out for now.** Four telemetry stub-polyfills
+(op-perf `connectionTelemetry`, `signalTelemetryProcessing`, `batchTracker`,
+per-DDS `sampledTelemetryHelper`) were prototyped and briefly landed, then
+**reverted by project decision**. They are deliberately **kept out of the
+ground-truth landed-reductions table above** and out of the non-tree landed total.
+
+- Combined win was only **~11,387 B parsed / ~2,437 B gzip** (−8,794 then −2,593
+  across two rounds).
+- In exchange they delete **real observability** — op round-trip perf,
+  signal-latency, batch-size, and per-DDS op/callback duration.
+
+That trade is not acceptable, so **telemetry is off-limits as a bundle-reduction
+lever** and the stubs were removed. The post-revert **7-stub baseline** (telemetry
+restored, before F24/F25) is **488,566 B parsed / 127,894 B gzip**, the
+measurement context for the F24/F25 rows in the table above. The per-file
+breakdown is in the detailed writeup ["Telemetry stubs — REMOVED"](#telemetry-stubs--removed-project-decision-114-kb-not-taken)
+under Part 1. **Do not re-propose telemetry stubbing.**
 
 ### Target (from real FF 2.80.0 consumer bundle)
 
