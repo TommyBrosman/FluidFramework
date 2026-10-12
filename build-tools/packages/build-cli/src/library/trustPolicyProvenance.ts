@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 /**
  * Sigstore-verified provenance enrichment used by `flub check trustPolicy`.
  *
+ * Kept outside the command directory so oclif does not discover it as a command.
  * Split out of `trustPolicy.ts` so the npm-attestation fetch + bundle
  * verification + SLSA in-toto parsing can be exercised independently of
  * the pnpm-driven audit loop. The `trustPolicy` command depends on this

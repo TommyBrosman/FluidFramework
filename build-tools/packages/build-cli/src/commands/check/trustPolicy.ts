@@ -15,9 +15,9 @@ import semver from "semver";
 import { BaseCommandWithBuildProject } from "../../library/commands/base.js";
 import {
 	fetchAndVerifyProvenance,
-	renderProvenanceDetails,
 	type ProvenanceDetails,
-} from "./trustPolicyProvenance.js";
+	renderProvenanceDetails,
+} from "../../library/trustPolicyProvenance.js";
 
 /**
  * The error code pnpm emits (both as the top-level `code` and inside `err`)
@@ -49,10 +49,10 @@ type TrustEvidence = "none" | "provenance" | "trustedPublisher";
  * `message` and `hint` are pnpm's human-readable strings. The remaining
  * optional fields are populated by {@link enrichViolations} from the
  * registry packument and identify the offender's publish metadata plus
- * the most recent prior version with stronger trust evidence (which is
- * the version pnpm is implicitly comparing against).
+ * the latest prior version with the strongest trust evidence.
+ * This is the evidence level pnpm compares against.
  */
-interface TrustViolation extends PinnedVersion {
+export interface TrustViolation extends PinnedVersion {
 	message?: string;
 	hint?: string;
 	/**
@@ -78,7 +78,7 @@ interface TrustViolation extends PinnedVersion {
 	 */
 	provenanceDetails?: ProvenanceDetails;
 	/**
-	 * The most recent earlier-published version (excluding prereleases
+	 * The latest earlier-published version with the strongest trust evidence (excluding prereleases
 	 * unless the offender itself is a prerelease, matching pnpm's logic)
 	 * that carries stronger trust evidence than the offender. This is the
 	 * version a downgrade would target.
@@ -325,7 +325,7 @@ export default class CheckTrustPolicyCommand extends BaseCommandWithBuildProject
 				const rootSet = rootsByKey.get(key);
 				const roots =
 					rootSet === undefined || rootSet.size === 0 ? undefined : [...rootSet].sort();
-				violations.push({ name, version, ...reason, roots });
+				violations.push({ name, version, ...(reason ?? {}), roots });
 			}
 		}
 
@@ -372,10 +372,8 @@ export default class CheckTrustPolicyCommand extends BaseCommandWithBuildProject
 					this.info(`      offender: ${parts.join(", ")}`);
 				}
 				if (violation.provenanceDetails !== undefined) {
-					renderProvenanceDetails(
-						"        ",
-						violation.provenanceDetails,
-						(line) => this.info(line),
+					renderProvenanceDetails("        ", violation.provenanceDetails, (line) =>
+						this.info(line),
 					);
 				}
 				if (violation.priorTrusted !== undefined) {
@@ -389,10 +387,8 @@ export default class CheckTrustPolicyCommand extends BaseCommandWithBuildProject
 						`      prior trusted: ${violation.name}@${pt.version} (${priorParts.join(", ")})`,
 					);
 					if (pt.provenanceDetails !== undefined) {
-						renderProvenanceDetails(
-							"        ",
-							pt.provenanceDetails,
-							(line) => this.info(line),
+						renderProvenanceDetails("        ", pt.provenanceDetails, (line) =>
+							this.info(line),
 						);
 					}
 				}
@@ -702,7 +698,7 @@ function extractTrustViolations(ndjsonStdout: string): TrustViolation[] {
 // generic hint. To surface what the user needs to investigate, we fetch
 // the packument via pacote (which honors the workspace's `.npmrc`,
 // including scoped registries and ADO-style auth tokens) and identify
-// the most recent prior version with stronger trust evidence — i.e. the
+// the latest prior version with the strongest trust evidence — i.e. the
 // version pnpm is implicitly comparing against. Best-effort: failures
 // land on `enrichmentError` and reporting falls back to pnpm's hint.
 
@@ -719,11 +715,18 @@ function getTrustEvidence(manifest: TrustFields): TrustEvidence {
 	return "none";
 }
 
+const trustEvidenceRank: Record<TrustEvidence, number> = {
+	none: 0,
+	provenance: 1,
+	trustedPublisher: 2,
+};
+
 /**
  * Populates each violation in `violations` (in place) with publish
  * metadata from the registry — the offender's publish timestamp,
- * publisher account, and trust evidence kind, plus the most recent
- * earlier-published version that carries trust evidence.
+ * publisher account, and trust evidence kind, plus the latest
+ * earlier-published version with the strongest evidence.
+ * A prior version is reported only if its evidence is stronger than the offender's.
  *
  * The "prior trusted" version is identified by publish time, not
  * semver order, matching pnpm's own logic in
@@ -750,7 +753,7 @@ function getTrustEvidence(manifest: TrustFields): TrustEvidence {
  * batch, registries can rate-limit, and sequential output keeps the
  * verbose log deterministic.
  */
-async function enrichViolations(
+export async function enrichViolations(
 	violations: TrustViolation[],
 	workspaceDir: string,
 	verbose: (msg: string) => void,
@@ -779,21 +782,32 @@ async function enrichViolations(
 			v.evidence = getTrustEvidence(offender);
 
 			const offenderTime = Date.parse(offenderTimeStr);
+			if (Number.isNaN(offenderTime)) {
+				v.enrichmentError = `invalid publish timestamp for version ${v.version}: ${offenderTimeStr}`;
+				continue;
+			}
 			const offenderIsPrerelease = semver.prerelease(v.version) !== null;
 			let bestTime = -Infinity;
-			// Walk every published version: keep ones predating the offender
-			// that carry trust evidence, pick the most recently published.
-			// Mirrors pnpm's `detectStrongestTrustEvidenceBeforeDate` but
-			// retains the specific version (pnpm only returns the evidence kind).
+			let bestRank = trustEvidenceRank[v.evidence];
+			// pnpm compares the strongest evidence before the offender's publish time.
+			// Retain the latest version at that strength to make the comparison actionable.
 			for (const [cVersion, cTimeStr] of Object.entries(pkg.time ?? {})) {
 				if (cVersion === "created" || cVersion === "modified") continue;
 				const cManifest = versions[cVersion];
 				if (cManifest === undefined) continue;
 				if (!offenderIsPrerelease && semver.prerelease(cVersion) !== null) continue;
 				const cTime = Date.parse(cTimeStr);
-				if (Number.isNaN(cTime) || cTime >= offenderTime || cTime <= bestTime) continue;
+				if (Number.isNaN(cTime) || cTime >= offenderTime) continue;
 				const evidence = getTrustEvidence(cManifest);
-				if (evidence === "none") continue;
+				const rank = trustEvidenceRank[evidence];
+				if (
+					rank <= trustEvidenceRank[v.evidence] ||
+					rank < bestRank ||
+					(rank === bestRank && cTime <= bestTime)
+				) {
+					continue;
+				}
+				bestRank = rank;
 				bestTime = cTime;
 				v.priorTrusted = {
 					version: cVersion,
