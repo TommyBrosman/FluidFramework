@@ -19,11 +19,11 @@ import {
 	DataVisualizerGraph,
 	type FluidObjectNode,
 	type RootHandleNode,
-	VisualNodeKind,
 	defaultVisualizers,
 } from "./data-visualization/index.js";
 import {
 	AudienceSummary,
+	CloseDataVisualization,
 	ContainerDevtoolsFeatures,
 	ContainerStateChange,
 	ContainerStateHistory,
@@ -49,9 +49,6 @@ import {
 export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 	implements IContainerDevtools, HasContainerKey
 {
-	/**
-	 * {@inheritDoc HasContainerKey.containerKey}
-	 */
 	public readonly containerKey: ContainerKey;
 
 	/**
@@ -277,13 +274,27 @@ export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 			[GetDataVisualization.MessageType]: async (untypedMessage) => {
 				const message = untypedMessage as GetDataVisualization.Message;
 				if (message.data.containerKey === this.containerKey) {
-					const visualization = await this.getDataVisualization(message.data.fluidObjectId);
+					// Registers the consumer's interest in the requested object so that subsequent changes are
+					// broadcast, and returns its current visualization.
+					const visualization = await this.subscribeToDataVisualization(
+						message.data.fluidObjectId,
+					);
 					// This is a user-requested visualization - should NOT trigger blinking
 					this.postDataVisualization(
 						message.data.fluidObjectId,
 						visualization,
 						DataVisualization.UpdateReason.UserRequested,
 					);
+					return true;
+				}
+				return false;
+			},
+			[CloseDataVisualization.MessageType]: async (untypedMessage) => {
+				const message = untypedMessage as CloseDataVisualization.Message;
+				if (message.data.containerKey === this.containerKey) {
+					// Releases the consumer's interest in the object so we can stop broadcasting updates for it once
+					// no consumers remain.
+					this.dataVisualizer?.unsubscribe(message.data.fluidObjectId);
 					return true;
 				}
 				return false;
@@ -422,13 +433,6 @@ export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 
 		this.dataVisualizer?.on("update", this.dataUpdateHandler);
 
-		// Initialize data visualization monitoring immediately to ensure event listeners are active
-		if (this.dataVisualizer !== undefined) {
-			this.initializeDataVisualizationMonitoring().catch((error) => {
-				console.error("Failed to initialize data visualization monitoring:", error);
-			});
-		}
-
 		// Register listener for inbound messages from the window (globalThis)
 		globalThis.addEventListener?.("message", this.windowMessageHandler);
 
@@ -473,25 +477,16 @@ export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 		this.audience.off("removeMember", this.audienceMemberRemovedHandler);
 	}
 
-	/**
-	 * {@inheritDoc IContainerDevtools.getContainerConnectionLog}
-	 */
 	public getContainerConnectionLog(): readonly ConnectionStateChangeLogEntry[] {
 		// Clone array contents so consumers don't see local changes
 		return this._connectionStateLog.map((value) => value);
 	}
 
-	/**
-	 * {@inheritDoc IContainerDevtools.getAudienceHistory}
-	 */
 	public getAudienceHistory(): readonly AudienceChangeLogEntry[] {
 		// Clone array contents so consumers don't see local changes
 		return this._audienceChangeLog.map((value) => value);
 	}
 
-	/**
-	 * {@inheritDoc IContainerDevtools.dispose}
-	 */
 	public dispose(): void {
 		// Unbind container and audience events
 		this.unbindContainerEvents();
@@ -508,36 +503,8 @@ export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 		this._disposed = true;
 	}
 
-	/**
-	 * {@inheritDoc @fluidframework/core-interfaces#IDisposable.disposed}
-	 */
 	public get disposed(): boolean {
 		return this._disposed;
-	}
-
-	/**
-	 * Initialize data visualization monitoring immediately to ensure event listeners are set up
-	 * and console logs appear even when devtools UI is not open.
-	 */
-	private async initializeDataVisualizationMonitoring(): Promise<void> {
-		try {
-			// Trigger initial rendering to set up event listeners on all shared objects
-			const rootVisualizations = await this.getRootDataVisualizations();
-
-			// Also render each root object fully to ensure nested objects get their listeners set up
-			if (rootVisualizations) {
-				for (const [_, handleNode] of Object.entries(rootVisualizations)) {
-					if (handleNode.nodeKind === VisualNodeKind.FluidHandleNode) {
-						await this.getDataVisualization(handleNode.fluidObjectId);
-					}
-				}
-			}
-		} catch (error) {
-			console.error(
-				"BaseDevtools: Failed to initialize data visualization monitoring:",
-				error,
-			);
-		}
 	}
 
 	protected async getRootDataVisualizations(): Promise<
@@ -546,9 +513,17 @@ export abstract class BaseDevtools<TContainer extends DecomposedContainer>
 		return this.dataVisualizer?.renderRootHandles() ?? undefined;
 	}
 
-	protected async getDataVisualization(
+	/**
+	 * Registers a consumer's interest in the specified Fluid object's visualization and returns its current state.
+	 *
+	 * @remarks
+	 * While a consumer is subscribed, updates to the object will be broadcast automatically (via the
+	 * {@link DataVisualization.Message}). The consumer is responsible for releasing its interest by sending a
+	 * {@link CloseDataVisualization.Message} when it is no longer displaying the object.
+	 */
+	protected async subscribeToDataVisualization(
 		fluidObjectId: FluidObjectId,
 	): Promise<FluidObjectNode | undefined> {
-		return this.dataVisualizer?.render(fluidObjectId) ?? undefined;
+		return this.dataVisualizer?.subscribe(fluidObjectId) ?? undefined;
 	}
 }

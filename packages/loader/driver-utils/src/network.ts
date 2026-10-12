@@ -56,9 +56,6 @@ export class GenericNetworkError
 	extends LoggingError
 	implements IDriverErrorBase, IFluidErrorBase
 {
-	/**
-	 * {@inheritDoc @fluidframework/telemetry-utils#IFluidErrorBase.errorType}
-	 */
 	readonly errorType = DriverErrorTypes.genericNetworkError;
 
 	constructor(
@@ -243,7 +240,7 @@ export const createWriteError = (
  */
 export function createGenericNetworkError(
 	message: string,
-	retryInfo: { canRetry: boolean; retryAfterMs?: number },
+	retryInfo: { canRetry: boolean; retryAfterMs?: number | undefined },
 	props: DriverErrorTelemetryProps,
 ): ThrottlingError | GenericNetworkError {
 	if (retryInfo.retryAfterMs !== undefined && retryInfo.canRetry) {

@@ -244,9 +244,6 @@ export class DataCorruptionError extends LoggingError implements IErrorBase, IFl
  * @internal
  */
 export class DataProcessingError extends LoggingError implements IErrorBase, IFluidErrorBase {
-	/**
-	 * {@inheritDoc IFluidErrorBase.errorType}
-	 */
 	public readonly errorType = FluidErrorTypes.dataProcessingError;
 
 	public readonly canRetry = false;
@@ -295,8 +292,7 @@ export class DataProcessingError extends LoggingError implements IErrorBase, IFl
 		messageLike?: MessageLike,
 	): IFluidErrorBase {
 		return wrapDataProcessingErrorIfUnrecognized(
-			(errorMessage: string, props?: ITelemetryBaseProperties) =>
-				new DataProcessingError(errorMessage, props),
+			(errorMessage: string) => new DataProcessingError(errorMessage),
 			originalError,
 			dataProcessingCodepath,
 			messageLike,

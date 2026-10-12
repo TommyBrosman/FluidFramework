@@ -25,7 +25,7 @@ import {
 import { IContainerRuntimeOptions } from "@fluidframework/container-runtime/internal";
 import { ConfigTypes, IConfigProviderBase } from "@fluidframework/core-interfaces";
 import { assert } from "@fluidframework/core-utils/internal";
-import { ITelemetryLoggerExt } from "@fluidframework/telemetry-utils/internal";
+import { TelemetryLoggerExt } from "@fluidframework/telemetry-utils/internal";
 import { LocalCodeLoader } from "@fluidframework/test-utils/internal";
 import { OdspTokenManager } from "@fluidframework/tool-utils/internal";
 
@@ -55,7 +55,7 @@ export async function initialize(
 	seed: number,
 	testConfig: TestConfiguration,
 	verbose: boolean,
-	logger: ITelemetryLoggerExt,
+	logger: TelemetryLoggerExt,
 	requestedTestId?: string,
 ): Promise<string> {
 	const random = makeRandom(seed);
@@ -127,6 +127,7 @@ export async function createTestDriver(
 	endpointName: DriverEndpoint | undefined,
 	seed: number,
 	runId: number | undefined,
+	username?: string,
 ): Promise<
 	LocalServerTestDriver | TinyliciousTestDriver | RouterliciousTestDriver | OdspTestDriver
 > {
@@ -136,6 +137,7 @@ export async function createTestDriver(
 			directory: "stress",
 			options: options[(runId ?? seed) % options.length],
 			odspEndpointName: endpointName,
+			username,
 			// Use a memory-only token manager to avoid cross-process file lock contention
 			// when many stress test workers run simultaneously.
 			tokenManager: new OdspTokenManager(),

@@ -33,6 +33,7 @@ import {
 import {
 	getBlobContentsFromTree,
 	type ContainerStorageAdapter,
+	type IBase64BlobContents,
 	type ISerializableBlobContents,
 } from "./containerStorageAdapter.js";
 import { SnapshotRefresher } from "./snapshotRefresher.js";
@@ -75,6 +76,12 @@ export interface IPendingContainerState extends SnapshotWithBlobs {
 	 */
 	attached: true;
 	/**
+	 * Indicates that blob payloads are omitted and must be read from live storage.
+	 *
+	 * Undefined for existing and self-contained pending state.
+	 */
+	blobContentsMode?: "reference";
+	/**
 	 * Runtime-specific state that will be needed to properly rehydrate
 	 * (it's included in ContainerContext passed to instantiateRuntime)
 	 */
@@ -83,6 +90,21 @@ export interface IPendingContainerState extends SnapshotWithBlobs {
 	 * Any group snapshots (aka delay-loaded) we've downloaded from the service for this container
 	 */
 	loadedGroupIdSnapshots?: Record<string, SerializedSnapshotInfo>;
+	/**
+	 * Attachment blob contents inlined by storage id, encoded as base64.
+	 *
+	 * Carried separately from {@link SnapshotWithBlobs.snapshotBlobs} because
+	 * attachment blobs may contain arbitrary binary payloads, and the
+	 * UTF-8 encoding used for `snapshotBlobs` (which holds JSON/text the
+	 * runtime authors) would corrupt non-UTF-8 byte sequences with
+	 * replacement characters. Populated by `captureFullContainerState`; the
+	 * live container's pending-state path leaves this `undefined` because
+	 * it does not inline attachment blob contents.
+	 *
+	 * On load, entries are decoded from base64 and merged into the same
+	 * blob cache that `snapshotBlobs` populates.
+	 */
+	attachmentBlobContents?: IBase64BlobContents;
 	/**
 	 * All ops since base snapshot sequence number up to the latest op
 	 * seen when the container was closed. Used to apply stashed (saved pending)
@@ -142,7 +164,7 @@ export type ISerializedStateManagerDocumentStorageService = Pick<
 };
 
 interface ISerializerEvent extends IEvent {
-	(event: "saved", listener: (dirty: boolean) => void): void;
+	(event: "saved", listener: () => void): void;
 }
 
 /**
@@ -150,7 +172,7 @@ interface ISerializerEvent extends IEvent {
  *
  * It holds the pendingLocalState the container was rehydrated from (if any),
  * as well as the snapshot to be used for serialization.
- * It also keeps track of container dirty state and which local ops have been processed
+ * It also keeps track of pending operation state and which local ops have been processed.
  */
 export class SerializedStateManager implements IDisposable {
 	private readonly processedOps: ISequencedDocumentMessage[] = [];
@@ -165,15 +187,16 @@ export class SerializedStateManager implements IDisposable {
 	 * @param subLogger - Container's logger to use as parent for our logger
 	 * @param storageAdapter - Storage adapter for fetching snapshots
 	 * @param offlineLoadEnabled - Is serializing/rehydrating containers allowed?
-	 * @param containerEvent - Source of the "saved" event when the container has all its pending state uploaded
-	 * @param containerDirty - Is the container "dirty"? That's the opposite of "saved" - there is pending state that may not have been received yet by the service.
+	 * @param pendingOpEvent - Source of the "saved" event when the container has no pending operations.
+	 * @param hasPendingOps - Whether local operations may not have been received by the service yet. Aggregate
+	 * non-op work is excluded because it cannot leave the pending-operation state behind a newer snapshot.
 	 */
 	constructor(
 		subLogger: ITelemetryBaseLogger,
 		private readonly storageAdapter: ISerializedStateManagerDocumentStorageService,
 		private readonly offlineLoadEnabled: boolean,
-		containerEvent: IEventProvider<ISerializerEvent>,
-		private readonly containerDirty: () => boolean,
+		pendingOpEvent: IEventProvider<ISerializerEvent>,
+		private readonly hasPendingOps: () => boolean,
 		private readonly supportGetSnapshotApi: () => boolean,
 		snapshotRefreshTimeoutMs?: number,
 	) {
@@ -193,7 +216,7 @@ export class SerializedStateManager implements IDisposable {
 				)
 			: undefined;
 
-		containerEvent.on("saved", () => this.updateSnapshotAndProcessedOpsMaybe());
+		pendingOpEvent.on("saved", () => this.updateSnapshotAndProcessedOpsMaybe());
 	}
 	public get disposed(): boolean {
 		return this.#disposed;
@@ -265,10 +288,21 @@ export class SerializedStateManager implements IDisposable {
 			}
 			return { snapshot, version, attributes };
 		} else {
-			const { baseSnapshot, snapshotBlobs, savedOps } = pendingLocalState;
+			const { baseSnapshot, snapshotBlobs, attachmentBlobContents, savedOps } =
+				pendingLocalState;
 			const blobContents = new Map<string, ArrayBuffer>();
+			// Structural snapshot blobs (snapshot trees, `.attributes`, `.redirectTable`)
+			// are JSON/text the runtime authored, so UTF-8 round-trip is lossless.
 			for (const [id, value] of Object.entries(snapshotBlobs)) {
 				blobContents.set(id, stringToBuffer(value, "utf8"));
+			}
+			// Attachment blobs are base64-encoded — see IPendingContainerState
+			// docs. Decoded after structural blobs because storage-id collisions
+			// between the two namespaces should resolve to the binary form.
+			if (attachmentBlobContents !== undefined) {
+				for (const [id, value] of Object.entries(attachmentBlobContents)) {
+					blobContents.set(id, stringToBuffer(value, "base64"));
+				}
 			}
 			this.storageAdapter.cacheSnapshotBlobs(blobContents);
 			const attributes = await getDocumentAttributes(this.storageAdapter, baseSnapshot);
@@ -322,7 +356,7 @@ export class SerializedStateManager implements IDisposable {
 			this.processedOps.length === 0 ||
 			this.processedOps[this.processedOps.length - 1].sequenceNumber <
 				this.lastSavedOpSequenceNumber ||
-			this.containerDirty()
+			this.hasPendingOps()
 		) {
 			// can't refresh latest snapshot until we have processed the ops up to it.
 			// Pending state would be behind the latest snapshot.

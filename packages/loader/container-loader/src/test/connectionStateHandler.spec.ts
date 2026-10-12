@@ -55,7 +55,7 @@ describe("ConnectionStateHandler Tests", () => {
 	let handlerInputs: IConnectionStateHandlerInputs;
 	let connectionStateHandler: IConnectionStateHandler;
 	let protocolHandler: ProtocolHandler;
-	let shouldClientJoinWrite: boolean;
+	let hasPendingOps: boolean;
 	let connectionDetails: IConnectionDetailsInternal;
 	let connectionDetails2: IConnectionDetailsInternal;
 	let connectionDetails3: IConnectionDetailsInternal;
@@ -152,11 +152,11 @@ describe("ConnectionStateHandler Tests", () => {
 			new Audience(),
 			(clientId: string) => false, // shouldClientHaveLeft
 		);
-		shouldClientJoinWrite = false;
+		hasPendingOps = false;
 		const logger = createChildLogger();
 		handlerInputs = {
 			maxClientLeaveWaitTime: expectedTimeout,
-			shouldClientJoinWrite: (): boolean => shouldClientJoinWrite,
+			hasPendingOps: (): boolean => hasPendingOps,
 			logConnectionIssue: (
 				eventName: string,
 				category: TelemetryEventCategory,
@@ -310,6 +310,68 @@ describe("ConnectionStateHandler Tests", () => {
 			connectionStateHandler.connectionState,
 			ConnectionState.Connected,
 			"Read Client should be in Connected state",
+		);
+	});
+
+	// Regression test for assert 0x3eb ("catchUpMonitor should be gone").
+	//
+	// Repro conditions (both are required to exercise the original bug):
+	//   1. The connection is already caught up at the moment of the Connected transition, so
+	//      CatchUpMonitor fires its listener *synchronously* (from `start()`).
+	//   2. Something re-enters with a synchronous Disconnected from within that "connected"
+	//      notification (e.g. an app/runtime handler reacting to the "connected" event by
+	//      disconnecting - such as a container forced into readonly mode).
+	//
+	// Before the fix, the CatchUpMonitor's synchronous caught-up check ran from its constructor,
+	// before `this.catchUpMonitor` was assigned, so the re-entrant Disconnected handler's
+	// `this.catchUpMonitor = undefined` no-oped and left a stale monitor attached - the next
+	// reconnect's transition to Connected then tripped assert 0x3eb. The fix assigns the field
+	// before calling `start()`, so the re-entrant disconnect disposes and clears the monitor
+	// correctly and the reconnect succeeds.
+	it("read client: re-entrant disconnect from a synchronous 'connected' notification reconnects cleanly (0x3eb regression)", () => {
+		// Condition 1: connection is already caught up at connect time (lastSequenceNumber === lastKnownSeqNumber),
+		// so CatchUpMonitor fires transitionToConnectedState synchronously from its constructor.
+		deltaManagerForCatchingUp.lastSequenceNumber =
+			deltaManagerForCatchingUp.lastKnownSeqNumber;
+
+		// Condition 2: simulate a host/runtime handler that synchronously disconnects in response to the
+		// "connected" notification. connectionStateChanged is invoked by transitionToConnectedState, which
+		// runs inside the CatchUpMonitor constructor for an already-caught-up connection.
+		let reentered = false;
+		handlerInputs.connectionStateChanged = (value): void => {
+			if (value === ConnectionState.Connected && !reentered) {
+				reentered = true;
+				connectionStateHandler.receivedDisconnectEvent({ text: "re-entrant disconnect" });
+			}
+		};
+
+		connectionStateHandler = createHandler(
+			true, // connectedRaisedWhenCaughtUp -> ConnectionStateCatchup wrapper (where 0x3eb lives)
+			false,
+		); // readClientsWaitForJoinSignal -> read connection goes straight to Connected
+
+		// Initial read connection: Connected is raised synchronously and the re-entrant disconnect fires.
+		// With the fix, the monitor field is already assigned, so the Disconnected handler disposes and
+		// clears it - no stale monitor is left behind.
+		connectionStateHandler.establishingConnection({ text: "read" });
+		connectionStateHandler.receivedConnectEvent(connectionDetails);
+		assert.strictEqual(
+			connectionStateHandler.connectionState,
+			ConnectionState.Disconnected,
+			"Re-entrant disconnect should have moved handler back to Disconnected",
+		);
+
+		// The reconnect (async in production) transitions to Connected again. Because the stale monitor
+		// was cleared, this no longer trips assert 0x3eb and the handler reaches Connected.
+		connectionStateHandler.establishingConnection({ text: "reconnect" });
+		assert.doesNotThrow(
+			() => connectionStateHandler.receivedConnectEvent(connectionDetails),
+			"Reconnect should not hit assert 0x3eb - the stale catchUpMonitor must have been cleared",
+		);
+		assert.strictEqual(
+			connectionStateHandler.connectionState,
+			ConnectionState.Connected,
+			"Reconnect should reach Connected cleanly",
 		);
 	});
 
@@ -529,7 +591,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -566,7 +628,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -606,7 +668,7 @@ describe("ConnectionStateHandler Tests", () => {
 		);
 
 		// Disconnect the first client, indicating all pending ops were ack'd
-		shouldClientJoinWrite = false;
+		hasPendingOps = false;
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
 			connectionStateHandler.connectionState,
@@ -614,13 +676,36 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client should be in disconnected state",
 		);
 
-		// Make new client join as read - no waiting for leave since shouldClientJoinWrite is false
+		// Make new client join as read - no waiting for leave since there are no pending ops.
 		connectionDetails3.mode = "read";
 		connectionStateHandler.receivedConnectEvent(connectionDetails3);
 		assert.strictEqual(
 			connectionStateHandler.connectionState,
 			ConnectionState.Connected,
 			"Client 2 should be in connected state",
+		);
+	});
+
+	it("write connection without pending ops does not wait for the previous client to leave", async () => {
+		connectionDetails.mode = "write";
+		connectionStateHandler.receivedConnectEvent(connectionDetails);
+		connectionStateHandler_receivedAddMemberEvent(pendingClientId);
+		assert.strictEqual(
+			connectionStateHandler.connectionState,
+			ConnectionState.Connected,
+			"Client 1 should be connected",
+		);
+
+		// The next connection is writable, but no op was submitted under Client 1.
+		hasPendingOps = false;
+		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
+
+		connectionStateHandler.receivedConnectEvent(connectionDetails2);
+		connectionStateHandler_receivedAddMemberEvent(pendingClientId2);
+		assert.strictEqual(
+			connectionStateHandler.connectionState,
+			ConnectionState.Connected,
+			"Client 2 should not wait for Client 1's Leave when no old-client op is pending",
 		);
 	});
 
@@ -634,7 +719,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -678,7 +763,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -704,8 +789,8 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client 2 should still be in connecting state as we are waiting for timeout",
 		);
 
-		// Fire the container saved event.
-		connectionStateHandler.containerSaved();
+		// Report that all pending operations have been saved.
+		connectionStateHandler.pendingOpsSaved();
 		assert.strictEqual(
 			connectionStateHandler.connectionState,
 			ConnectionState.Connected,
@@ -738,7 +823,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client 1 should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -763,7 +848,7 @@ describe("ConnectionStateHandler Tests", () => {
 
 		// Make new client 3 join so that it waits for client 1 to leave
 		// This is rather tricky case when client3mode === "read", as we are testing adding "read" client when
-		// shouldClientJoinWrite() reports true.
+		// hasPendingOps() reports true.
 		connectionDetails3.mode = client3mode;
 		connectionStateHandler.receivedConnectEvent(connectionDetails3);
 		connectionStateHandler_receivedAddMemberEvent(pendingClientId3);
@@ -807,7 +892,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client 1 should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -877,7 +962,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client 1 should be in connected state",
 		);
 
-		shouldClientJoinWrite = true;
+		hasPendingOps = true;
 		// Disconnect the client
 		connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 		assert.strictEqual(
@@ -922,7 +1007,7 @@ describe("ConnectionStateHandler Tests", () => {
 			"Client 3 should still be in connecting state as timeout has not occurred",
 		);
 
-		connectionStateHandler.containerSaved();
+		connectionStateHandler.pendingOpsSaved();
 		assert.strictEqual(
 			connectionStateHandler.connectionState,
 			ConnectionState.Connected,
@@ -951,7 +1036,7 @@ describe("ConnectionStateHandler Tests", () => {
 				"Client 1 should be in connected state",
 			);
 
-			shouldClientJoinWrite = true;
+			hasPendingOps = true;
 			// Disconnect the client
 			connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 			assert.strictEqual(
@@ -1019,7 +1104,7 @@ describe("ConnectionStateHandler Tests", () => {
 				"Client 1 should be in connected state",
 			);
 
-			shouldClientJoinWrite = true;
+			hasPendingOps = true;
 			// Disconnect the client
 			connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 			assert.strictEqual(
@@ -1095,7 +1180,7 @@ describe("ConnectionStateHandler Tests", () => {
 				"Client 1 should be in connected state",
 			);
 
-			shouldClientJoinWrite = true;
+			hasPendingOps = true;
 			// Disconnect the client
 			connectionStateHandler.receivedDisconnectEvent({ text: "Test" });
 			assert.strictEqual(

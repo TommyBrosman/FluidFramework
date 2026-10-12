@@ -3,9 +3,13 @@
  * Licensed under the MIT License.
  */
 
-import { assert, oob } from "@fluidframework/core-utils/internal";
+import { oob } from "@fluidframework/core-utils/internal";
 import { UsageError } from "@fluidframework/telemetry-utils/internal";
-import type { RevertibleAlpha, TreeBranchAlpha } from "@fluidframework/tree/internal";
+import {
+	CommitKind,
+	type RevertibleAlpha,
+	type UntypedTreeViewAlpha,
+} from "@fluidframework/tree/internal";
 
 import { areSetsDisjoint, findLastIndex } from "./utilities.js";
 
@@ -173,7 +177,7 @@ function labelPredicate(label: unknown): (entry: StackEntry) => boolean {
  * Tracks tree branches currently viewed by an {@link UndoRedoManager} instance.
  * Used to prevent multiple managers from attaching to the same branch, which is not currently supported.
  */
-const attachedBranches = new WeakSet<TreeBranchAlpha>();
+const attachedBranches = new WeakSet<UntypedTreeViewAlpha>();
 
 /**
  * Concrete implementation of {@link UndoRedo} for a SharedTree branch.
@@ -198,18 +202,7 @@ class UndoRedoManager implements UndoRedo {
 	 * The branch this manager is attached to.
 	 * @remarks Retained after construction so it can be removed from {@link attachedBranches} on dispose.
 	 */
-	readonly #branch: TreeBranchAlpha;
-
-	/**
-	 * Set synchronously around `revert()` calls so the `changed` event handler can attribute the
-	 * resulting commit to an undo or redo action rather than treating it as a new user commit.
-	 *
-	 * @remarks
-	 * This workaround is needed because SharedTree's `revert()` does not preserve the original
-	 * commit's labels on the resulting commit.
-	 * TODO: AB#71256: Remove once SharedTree supports preserving commit labels on revert.
-	 */
-	#pendingOperation: { kind: "undo" | "redo"; labels: ReadonlySet<unknown> } | undefined;
+	readonly #branch: UntypedTreeViewAlpha;
 
 	/** Whether or not this instance has been disposed. */
 	#disposed = false;
@@ -218,7 +211,7 @@ class UndoRedoManager implements UndoRedo {
 	 * @param branch - The tree branch whose commits this manager will track.
 	 * @throws If a manager is already attached to `branch`.
 	 */
-	public constructor(branch: TreeBranchAlpha) {
+	public constructor(branch: UntypedTreeViewAlpha) {
 		if (attachedBranches.has(branch)) {
 			throw new UsageError("An UndoRedoManager is already attached to this branch.");
 		}
@@ -229,25 +222,21 @@ class UndoRedoManager implements UndoRedo {
 				return;
 			}
 
-			if (this.#pendingOperation !== undefined) {
-				const { kind, labels } = this.#pendingOperation;
-				const revertible = getRevertible();
-				// Route to the opposite stack, preserving the original commit's labels so that
-				// label-filtered canUndo/canRedo/undo/redo remain consistent after undo or redo.
-				if (kind === "undo") {
-					this.#redoStack.push({ revertible, labels });
-				} else {
-					this.#undoStack.push({ revertible, labels });
-				}
+			// Revert commits inherit their original commit's labels (per SharedTree's commit metadata),
+			// so we route by `data.kind` and pull labels straight from `data.labels`.
+			const commitLabels = new Set<unknown>(data.labels);
+
+			if (data.kind === CommitKind.Undo) {
+				this.#redoStack.push({ revertible: getRevertible(), labels: commitLabels });
+				return;
+			}
+			if (data.kind === CommitKind.Redo) {
+				this.#undoStack.push({ revertible: getRevertible(), labels: commitLabels });
 				return;
 			}
 
-			// Normal user commit: collect root-level labels from the commit metadata.
-			// Nested label nodes (produced by inner runTransaction calls) are not traversed —
-			// see UndoRedo remarks.
-			const commitLabels = new Set<unknown>(data.labels);
-
-			// Redo invalidation: clear redo entries whose label sets overlap with this commit's labels.
+			// Default: a new user commit. Invalidate redo entries whose label sets overlap with this
+			// commit's labels. An anonymous commit clears only anonymous redo entries.
 			for (let i = this.#redoStack.length - 1; i >= 0; i--) {
 				const entry = this.#redoStack[i];
 				if (entry === undefined) {
@@ -272,14 +261,14 @@ class UndoRedoManager implements UndoRedo {
 		if (this.#disposed) {
 			return;
 		}
-		this.#revertWhere(this.#undoStack, "undo", labelPredicate(label));
+		this.#revertWhere(this.#undoStack, labelPredicate(label));
 	}
 
 	public redo(label?: unknown): void {
 		if (this.#disposed) {
 			return;
 		}
-		this.#revertWhere(this.#redoStack, "redo", labelPredicate(label));
+		this.#revertWhere(this.#redoStack, labelPredicate(label));
 	}
 
 	public canUndo(label?: unknown): boolean {
@@ -315,32 +304,17 @@ class UndoRedoManager implements UndoRedo {
 
 	/**
 	 * Reverts the top-most entry in `stack` matching `predicate`.
-	 * @remarks No-ops if no entry matches.
-	 *
-	 * @param stack - The undo or redo stack to operate on.
-	 * @param kind - Whether this is an `"undo"` or `"redo"` operation, used to route the resulting
-	 * revertible to the opposite stack.
-	 * @param predicate - Selects the target entry; the top-most matching entry is reverted.
+	 * @remarks No-ops if no entry matches. The resulting commit fires the `changed` event with
+	 * `kind: CommitKind.Undo` or `CommitKind.Redo` (matching the inverse direction of the original),
+	 * which routes it onto the opposite stack via the `changed` handler.
 	 */
-	#revertWhere(
-		stack: StackEntry[],
-		kind: "undo" | "redo",
-		predicate: (entry: StackEntry) => boolean,
-	): void {
-		assert(this.#pendingOperation === undefined, "Unexpected pending operation during revert");
-
+	#revertWhere(stack: StackEntry[], predicate: (entry: StackEntry) => boolean): void {
 		const index = findLastIndex(stack, predicate);
 		if (index === -1) {
 			return;
 		}
 		const entry = stack.splice(index, 1)[0] ?? oob();
-
-		this.#pendingOperation = { kind, labels: entry.labels };
-		try {
-			entry.revertible.revert();
-		} finally {
-			this.#pendingOperation = undefined;
-		}
+		entry.revertible.revert();
 	}
 }
 
@@ -356,6 +330,6 @@ class UndoRedoManager implements UndoRedo {
  * @throws If a manager is already attached to `branch`.
  * @internal
  */
-export function createUndoRedo(branch: TreeBranchAlpha): UndoRedo {
+export function createUndoRedo(branch: UntypedTreeViewAlpha): UndoRedo {
 	return new UndoRedoManager(branch);
 }

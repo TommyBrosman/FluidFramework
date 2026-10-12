@@ -163,6 +163,7 @@ export interface IContainer extends IEventProvider<IContainerEvents> {
     getAbsoluteUrl(relativeUrl: string): Promise<string | undefined>;
     getEntryPoint(): Promise<FluidObject>;
     getLoadedCodeDetails(): IFluidCodeDetails | undefined;
+    getPendingLocalState?(): Promise<string>;
     getQuorum(): IQuorumClients;
     getSpecifiedCodeDetails(): IFluidCodeDetails | undefined;
     readonly isDirty: boolean;
@@ -343,6 +344,7 @@ export interface IErrorBase extends Partial<Error> {
 
 // @beta @legacy
 export interface IFluidBrowserPackage extends IFluidPackage {
+    // (undocumented)
     fluid: {
         browser: IFluidBrowserPackageEnvironment;
         [environment: string]: IFluidPackageEnvironment;
@@ -436,7 +438,6 @@ export interface ILoader extends Partial<IProvideLoader> {
 export type ILoaderOptions = {
     cache?: boolean;
     client?: IClient;
-    enableOfflineLoad?: boolean;
     provideScopeLoader?: boolean;
     maxClientLeaveWaitTime?: number;
 };
@@ -507,6 +508,7 @@ export interface ISnapshotTreeWithBlobContents extends ISnapshotTree {
 
 // @beta @legacy
 export interface IThrottlingWarning extends IErrorBase {
+    // (undocumented)
     readonly errorType: typeof FluidErrorTypes.throttlingError;
     // (undocumented)
     readonly retryAfterSeconds: number;

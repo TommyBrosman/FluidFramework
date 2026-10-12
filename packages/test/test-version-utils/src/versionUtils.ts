@@ -3,30 +3,6 @@
  * Licensed under the MIT License.
  */
 
-/**
- * Utilities for loading legacy versions of Fluid Framework packages for compatibility testing.
- *
- * ## Architecture
- *
- * Legacy packages live in a single committed pnpm sub-workspace at `compat-workspaces/full/`.
- * The workspace is installed automatically when `pnpm install` is run from the repo root (via
- * the `postinstall` script in this package's `package.json`), so no runtime installation step
- * is required in tests.
- *
- * The exact resolved versions are recorded in `compat-workspaces/generated-versions.cjs`, which is
- * maintained by the `update-compat-versions` script and committed to the repository. Tests
- * read this manifest at startup to resolve version ranges to exact versions.
- *
- * ## Updating compat versions
- *
- * After a version bump, run:
- * `pnpm run update-compat-versions`
- *
- * This regenerates `generated-versions.cjs` and all per-version `package.json` files, then runs
- * `pnpm install --no-frozen-lockfile` in the workspace to update the committed lockfile.
- * Commit all changes produced by the script.
- */
-
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -75,13 +51,6 @@ export function readVersionsManifest(): CompatVersionsManifest {
 	return cachedManifest;
 }
 
-/**
- * Returns all exact versions recorded in the manifest.
- */
-export function getAllManifestVersions(manifest: CompatVersionsManifest): string[] {
-	return manifest.versions;
-}
-
 // ---------------------------------------------------------------------------
 // Version resolution
 // ---------------------------------------------------------------------------
@@ -94,70 +63,85 @@ const resolutionCache = new Map<string, string>();
 const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
 /**
- * Resolves a version range or alias to an exact version using the committed manifest.
- *
- * @internal
+ * @returns A version of the provided function which caches outputs based on JSON-stringified arguments.
+ * @remarks
+ * Do not use this function if any of the arguments to the function are conceptually not primitives OR if they can be undefined.
+ * @privateRemarks
+ * The typing on this is constructed so that users of the cached function will have their inner function type (including e.g. parameter names) preserved.
  */
-export function resolveVersion(requested: string, installed: boolean): string {
-	const cachedVersion = resolutionCache.get(requested);
-	if (cachedVersion) {
-		return cachedVersion;
+function cached<TFunc extends (...args: any[]) => unknown>(f: TFunc): TFunc {
+	const undefinedSentinel = Symbol("undefined");
+	const cache = new Map<string, ReturnType<TFunc> | typeof undefinedSentinel>();
+	return ((...args: Parameters<TFunc>) => {
+		const key = JSON.stringify(args);
+		let cachedOutput: ReturnType<TFunc> | typeof undefinedSentinel | undefined =
+			cache.get(key);
+		if (cachedOutput === undefined) {
+			cachedOutput = f(...args) as ReturnType<TFunc>;
+			cache.set(key, cachedOutput ?? undefinedSentinel);
+		}
+		return cachedOutput === undefinedSentinel ? undefined : cachedOutput;
+	}) as unknown as TFunc;
+}
+
+function validateRangeSpec(rangeSpec: string): void {
+	if (!semver.validRange(rangeSpec)) {
+		throw new Error(`Invalid semver range: "${rangeSpec}"`);
 	}
-	if (semver.valid(requested)) {
-		// If it is a valid semver already instead of a range, just use it
-		resolutionCache.set(requested, requested);
-		return requested;
+}
+
+/**
+ * Resolves a semver dependency spec to the single highest version matching that spec which is published in the npm registry.
+ * @param rangeSpec - A valid (as per [semver](https://www.npmjs.com/package/semver)) range specification
+ */
+export const resolveRangeViaRegistry = cached((rangeSpec: string): string => {
+	if (semver.valid(rangeSpec)) {
+		return rangeSpec;
 	}
 
-	if (!semver.validRange(requested)) {
-		throw new Error(`Invalid semver range: "${requested}"`);
+	validateRangeSpec(rangeSpec);
+	let result: string;
+	try {
+		result = execFileSync(
+			pnpmCmd,
+			["view", `"@fluidframework/container-loader@${rangeSpec}"`, "version", "--json"],
+			{
+				encoding: "utf8",
+				// When using pnpm.cmd shell must be true: https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
+				shell: true,
+			},
+		);
+	} catch (e) {
+		throw new Error(`pnpm view failed for range "${rangeSpec}": ${e}`);
+	}
+	if (!result) throw new Error(`No published version for range: ${rangeSpec}`);
+	const versions: string | string[] = JSON.parse(result);
+	const version = Array.isArray(versions) ? versions.sort(semver.rcompare)[0] : versions;
+	if (!version) throw new Error(`Could not resolve range: ${rangeSpec}`);
+	return version;
+});
+
+/**
+ * Resolves a semver dependency spec to the most recent installed version under compat-workspaces which
+ * satisfies that range.
+ *
+ * Throws if the currently installed compat workspace does not include any version that matches the spec.
+ * @param rangeSpec - A valid (as per [semver](https://www.npmjs.com/package/semver)) range specification
+ */
+export function resolveRangeViaManifest(rangeSpec: string): string {
+	if (semver.valid(rangeSpec)) {
+		return rangeSpec;
 	}
 
-	if (installed) {
-		const manifest = readVersionsManifest();
-		const matching = manifest.versions
-			.filter((v) => semver.valid(v) && semver.satisfies(v, requested))
-			.sort(semver.rcompare);
-		if (matching.length > 0) {
-			resolutionCache.set(requested, matching[0]);
-			return matching[0];
-		}
-		throw new Error(`No version in manifest satisfies range: "${requested}"`);
-	} else {
-		let result: string | undefined;
-		try {
-			result = execFileSync(
-				pnpmCmd,
-				["view", `"@fluidframework/container-loader@${requested}"`, "version", "--json"],
-				{
-					encoding: "utf8",
-					// When using pnpm.cmd shell must be true: https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
-					shell: true,
-				},
-			);
-		} catch (error: any) {
-			debugger;
-			throw new Error(
-				`Error while running: ${pnpmCmd} view "@fluidframework/container-loader@${requested}" version --json`,
-			);
-		}
-		if (result === "" || result === undefined) {
-			throw new Error(`No version published as ${requested}`);
-		}
-
-		try {
-			const versions: string | string[] = result !== "" ? JSON.parse(result) : "";
-			const version = Array.isArray(versions) ? versions.sort(semver.rcompare)[0] : versions;
-			if (version) {
-				resolutionCache.set(requested, version);
-				return version;
-			}
-		} catch (e) {
-			throw new Error(`Error parsing versions for ${requested}`);
-		}
-
-		throw new Error(`No version found for ${requested}`);
+	validateRangeSpec(rangeSpec);
+	const manifest = readVersionsManifest();
+	const matching = manifest.versions
+		.filter((v) => semver.valid(v) && semver.satisfies(v, rangeSpec))
+		.sort(semver.rcompare);
+	if (matching.length > 0) {
+		return matching[0];
 	}
+	throw new Error(`No version in manifest satisfies range: "${rangeSpec}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +156,7 @@ export function resolveVersion(requested: string, installed: boolean): string {
  * @internal
  */
 export function checkInstalled(requested: string): { version: string; modulePath: string } {
-	const version = resolveVersion(requested, true);
+	const version = resolveRangeViaManifest(requested);
 	const versionDir = path.join(fullWorkspaceDir, version);
 
 	if (existsSync(versionDir)) {
@@ -181,7 +165,9 @@ export function checkInstalled(requested: string): { version: string; modulePath
 
 	throw new Error(
 		`Version ${version} is not installed in compat-workspaces/full/.\n` +
-			`Run \`pnpm run update-compat-versions\` to regenerate the workspace, then re-run \`pnpm install\`.`,
+			`To add it, update explicit-versions.mjs, then run \`pnpm run update-compat-versions\` to regenerate the workspace dependencies.\n` +
+			`If it is already listed as a dependency of compat-workspaces/full, this error might indicate that the workspace was not installed correctly.\n` +
+			`Try running \`pnpm install\` from the repo root to ensure the workspace is installed.`,
 	);
 }
 
@@ -312,23 +298,36 @@ export function calculateRequestedRange(
 
 	// If the base version is a public version and `adjustPublicMajor` is false, then we need to ensure that we
 	// calculate N-1 as the previous major release, regardless if it is public or internal.
-	// Currently, this case only applies to calculating N-X for 2.x.y.
+	// This special-cased legacy scheme (minor-decade/RC ranges) only applies while computing N-X *from* a 2.x.y
+	// base version, since 2.x spanned many minors/RC releases without a major version bump. For major versions
+	// other than 2 (e.g. 3.x and beyond), fall through to the normal major-decrement logic below, which correctly
+	// resolves N-1 of 3.0.0 to the latest published 2.x release.
 	// TODO: This is a temporary solution and we need to entirely rewrite this function to handle the changes the version schemas. See ADO:8198.
-	if (adjustPublicMajor === false && version.major > 1) {
-		if (version.minor < 10) {
+	assert(version.major <= 3, "This legacy logic only known to work for 2.x and 3.x versions.");
+	if (adjustPublicMajor === false && version.major >= 2) {
+		// For 3.x, treat it as if it were a newer 2.x set that begins at beta break point beyond the last 2.x release.
+		// 2.116 was last 2.x release, so we treat >=3.0 <3.10 as if it were 2.120.0 for the purposes of calculating N-1.
+		const minor =
+			version.major === 3
+				? version.minor < 10
+					? 120
+					: (() => {
+							throw new Error("Unsupported 3.10+ version");
+						})()
+				: version.minor;
+		if (minor < 10) {
 			// If 2.0 <= N < 2.10, then we can pretend that N is RC6 (*which doesn't exist*) and calculate the range as if it were an internal version.
 			const internalSchemeRange = internalSchema("2.0.0", "6.0.0", "rc", requested);
 			return internalSchemeRange;
 		} else {
 			// For each requested version to go back, we go back 10 minor versions. If requested is -2, then we need to go back 20 minor versions.
 			const legacyMinorsToSkip = Math.abs(requested * 10);
-			if (legacyMinorsToSkip > version.minor) {
+			if (legacyMinorsToSkip > minor) {
 				// If the number of minors we need to go back is greater than the minor version, then that means we will be going back to RC releases.
 				// Here we calculate how many more releases we need to go back **after** we take into account going from the current minor version to 2.0.
 				// For example, if N is 2.20, then the range we need to return for N-1 starts at 2.10, for N-2 it starts at 2.0, N-3 is RC5, N-4 is RC4, etc.
 				// So if N is 2.20 and requested is 4, then we still need to go back 2 more releases from 2.0 (treated as RC6).
-				const remainingRequested =
-					(legacyMinorsToSkip - Math.floor(version.minor / 10) * 10) / 10;
+				const remainingRequested = (legacyMinorsToSkip - Math.floor(minor / 10) * 10) / 10;
 				const internalSchemeRange = internalSchema(
 					"2.0.0",
 					"6.0.0",
@@ -339,10 +338,10 @@ export function calculateRequestedRange(
 			}
 			// Here we know that the requested version will be >=2.0, so we can avoid all the RC releases.
 			// If N >= 2.10, then the range we need to return for N-1 starts at legacy breaking minor before the one N belongs to.
-			const lowerMinorRange = Math.floor((version.minor - legacyMinorsToSkip) / 10) * 10;
+			const lowerMinorRange = Math.floor((minor - legacyMinorsToSkip) / 10) * 10;
 			const upperMinorRange = lowerMinorRange + 10;
 			// Here we do a range that, when resolved, will result in the latest minor version that satisfies the request.
-			return `>=${version.major}.${lowerMinorRange}.0-0 <${version.major}.${upperMinorRange}.0-0`;
+			return `>=2.${lowerMinorRange}.0-0 <2.${upperMinorRange}.0-0`;
 		}
 	} else {
 		// calculate requested major version number
@@ -367,57 +366,111 @@ export function calculateRequestedRange(
 }
 
 /**
- * Given a version, returns the most recently released version. The version provided can be
- * adjusted to the next or previous major versions by providing positive/negative integers in the
- * `requested` parameter.
+ * Options for {@link getRequestedVersion}.
  *
- * @param baseVersion - The base version to move from (eg. "0.60.0")
- * @param requested - If the value is a negative number, the baseVersion will be adjusted down.
- * If the value is a string then it will be returned as-is. Throws on positive number.
- * @param adjustPublicMajor - If `baseVersion` is a Fluid internal version, then this boolean controls whether the
- * public or internal version is adjusted by the `requested` value. This parameter has no effect if `requested` is a
- * string value or if `baseVersion` is not a Fluid internal version.
+ * @internal
+ */
+export interface GetRequestedVersionOptions {
+	/** The base version to move from (eg. "2.60.0"). */
+	baseVersion: string;
+	/**
+	 * If the value is a negative number, the base version will be adjusted down.
+	 * If the value is a string then it will be returned as-is. Throws on positive number.
+	 */
+	requested?: number | string;
+	/**
+	 * If `baseVersion` is a Fluid internal version, this controls whether the public or internal
+	 * version is adjusted by `requested`.
+	 */
+	adjustPublicMajor?: boolean;
+	/**
+	 * When `true`, resolve against the npm registry. Defaults to `false`, which resolves against the
+	 * committed compat versions manifest.
+	 * @privateRemarks
+	 * Likely a better design for expressing what set of versions to consider would be to decouple the discovery of the set of versions from the resolution logic.
+	 * This could be done by creating a type which holds a set of versions to consider, and passing it into the resolution functions.
+	 * Then we simply need a function to create this type from the manifest, and one to create it from the registry.
+	 * We can then make the registry version package internal and only used by the update logic to help ensure registry dependency is avoided in other cases.
+	 */
+	useOnlineRegistry?: boolean;
+}
+
+/**
+ * Given a version, returns the most recently resolved version for the requested range.
+ *
+ * By default, this resolves against the committed compat versions manifest so test selection stays
+ * stable for a given lockfile. Set `useOnlineRegistry` to `true` to opt into npm registry
+ * resolution for workflows like regenerating the compat manifest.
  *
  * @remarks
  *
- * In typical use, the `requested` values are negative values to return ranges for previous versions (e.g. "-1").
+ * In typical use, `requested` is a negative value to ask for a previous version (e.g. `-1`).
  *
  * @example
  * ```typescript
- * const newVersion = getRequestedVersion("2.3.5", -1); // "^1.0.0"
+ * const newVersion = getRequestedVersion({ baseVersion: "2.3.5", requested: -1 });
  * ```
  *
  * @example
  * ```typescript
- * const newVersion = getRequestedVersion("2.3.5", -2); // "^0.59.0"
+ * const newVersion = getRequestedVersion({
+ *   baseVersion: "2.3.5",
+ *   requested: -2,
+ *   useOnlineRegistry: true,
+ * });
  * ```
  *
  * @internal
  */
-export function getRequestedVersion(
-	baseVersion: string,
-	requested?: number | string,
-	adjustPublicMajor: boolean = false,
-): string {
+export function getRequestedVersion({
+	baseVersion,
+	requested,
+	adjustPublicMajor = false,
+	useOnlineRegistry = false,
+}: GetRequestedVersionOptions): string {
+	// Current-version requests should stay pinned to the caller-provided base version.
+	// This avoids requiring the current version to exist in the compat manifest/registry.
+	if (requested === undefined || requested === 0) {
+		return baseVersion;
+	}
+
+	// Explicit version strings are already concrete requests, so return them directly.
+	if (typeof requested === "string") {
+		return requested;
+	}
+
 	const calculatedRange = calculateRequestedRange(baseVersion, requested, adjustPublicMajor);
+	const cacheKey = JSON.stringify({ calculatedRange, useOnlineRegistry });
+	const cachedResolution = resolutionCache.get(cacheKey);
+	if (cachedResolution !== undefined) {
+		return cachedResolution;
+	}
+
+	const resolveRange = useOnlineRegistry ? resolveRangeViaRegistry : resolveRangeViaManifest;
 	try {
 		// Returns the exact version that was requested (i.e. 2.0.0-rc.2.0.2).
 		// Will throw if the requested version range is not valid.
-		return resolveVersion(calculatedRange, false);
+		const resolvedVersion = resolveRange(calculatedRange);
+		resolutionCache.set(cacheKey, resolvedVersion);
+		return resolvedVersion;
 	} catch (err: any) {
 		// If we tried fetching N-1 and it failed, try N-2. It is possible that we are trying to bump the current branch
-		// to a new version. If that is the case, then N-1 may not be published yet, and we should try to use N-2 in it's place.
+		// to a new version. If that is the case, then N-1 may not be published yet, and we should try to use N-2 in its place.
 		if (requested === -1) {
-			const resolvedVersion = getRequestedVersion(baseVersion, -2, adjustPublicMajor);
+			const resolvedVersion = getRequestedVersion({
+				baseVersion,
+				requested: -2,
+				adjustPublicMajor,
+				useOnlineRegistry,
+			});
 			// Here we cache the result so we don't have to enter the try/catch flow again.
 			// Note: This will cache the resolved version range (i.e. >=2.0.0-rc.4.0.0 <2.0.0-rc.5.0.0). Because of this,
-			// it will not cause any conflicts when trying to fetch the current version
-			// i.e. `getRequestedVersion("2.0.0-rc.5.0.0", 0, false)` will still return "2.0.0-rc.5.0.0".
-			resolutionCache.set(calculatedRange, resolvedVersion);
+			// it will not cause any conflicts when trying to fetch the current version —
+			// i.e. `getRequestedVersion({ baseVersion: "2.0.0-rc.5.0.0" })` will still return "2.0.0-rc.5.0.0".
+			resolutionCache.set(cacheKey, resolvedVersion);
 			return resolvedVersion;
-		} else {
-			throw new Error(`Error trying to getRequestedVersion: ${err}`);
 		}
+		throw new Error(`Error trying to getRequestedVersion: ${err}`);
 	}
 }
 

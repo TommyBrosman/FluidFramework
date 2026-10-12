@@ -59,9 +59,6 @@ export interface DocumentationHierarchyConfigurationBase {
  */
 export interface SectionHierarchyConfiguration
 	extends DocumentationHierarchyConfigurationBase {
-	/**
-	 * {@inheritDoc DocumentationHierarchyConfigurationBase.kind}
-	 */
 	readonly kind: HierarchyKind.Section;
 }
 
@@ -73,9 +70,6 @@ export interface SectionHierarchyConfiguration
  */
 export interface DocumentHierarchyConfiguration
 	extends DocumentationHierarchyConfigurationBase {
-	/**
-	 * {@inheritDoc DocumentationHierarchyConfigurationBase.kind}
-	 */
 	readonly kind: HierarchyKind.Document;
 }
 
@@ -103,9 +97,6 @@ export enum FolderDocumentPlacement {
  * @public
  */
 export interface FolderHierarchyConfiguration extends DocumentationHierarchyConfigurationBase {
-	/**
-	 * {@inheritDoc DocumentationHierarchyConfigurationBase.kind}
-	 */
 	readonly kind: HierarchyKind.Folder;
 
 	/**
@@ -154,6 +145,8 @@ const defaultFolderHierarchyOptions = {
  *
  * @public
  */
+// Keep mapped members so TSDoc remains attached to the API-item-kind property group.
+// eslint-disable-next-line @typescript-eslint/consistent-indexed-object-style
 export type HierarchyConfiguration = {
 	/**
 	 * Hierarchy configuration for the API item kind.
@@ -221,6 +214,8 @@ export type HierarchyConfiguration = {
  *
  * @public
  */
+// Keep mapped members so TSDoc remains attached to the API-item-kind property group.
+// eslint-disable-next-line @typescript-eslint/consistent-indexed-object-style
 export type HierarchyOptions = {
 	/**
 	 * Hierarchy configuration for the API item kind.

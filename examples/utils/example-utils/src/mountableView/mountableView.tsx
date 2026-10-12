@@ -5,7 +5,7 @@
 
 import type { FluidObject } from "@fluidframework/core-interfaces";
 import { isValidElement } from "react";
-import * as ReactDOM from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
 
 import type { IFluidMountableView } from "./interface.js";
 
@@ -18,9 +18,6 @@ import type { IFluidMountableView } from "./interface.js";
  * @internal
  */
 export class MountableView implements IFluidMountableView {
-	/**
-	 * {@inheritDoc IProvideFluidMountableView.IFluidMountableView}
-	 */
 	public get IFluidMountableView(): MountableView {
 		return this;
 	}
@@ -40,6 +37,11 @@ export class MountableView implements IFluidMountableView {
 	private containerElement: HTMLElement | undefined;
 
 	/**
+	 * The React root used to mount and unmount the current view.
+	 */
+	private reactRoot: Root | undefined;
+
+	/**
 	 * If the viewProvider is a React component we will retain a reference to the React component across
 	 * rendering/removal.
 	 */
@@ -57,9 +59,6 @@ export class MountableView implements IFluidMountableView {
 		this.view = view;
 	}
 
-	/**
-	 * {@inheritDoc IFluidMountableView.mount}
-	 */
 	public mount(container: HTMLElement): void {
 		if (this.containerElement !== undefined) {
 			throw new Error("Already mounted");
@@ -73,9 +72,8 @@ export class MountableView implements IFluidMountableView {
 		}
 		// Render with React if possible.
 		if (this.reactView !== undefined) {
-			// TODO: Remove rule disable once we move to the React 18 APIs.
-			// eslint-disable-next-line import-x/no-deprecated -- AB#18875
-			ReactDOM.render(this.reactView, this.containerElement);
+			this.reactRoot = createRoot(this.containerElement);
+			this.reactRoot.render(this.reactView);
 			return;
 		}
 
@@ -83,9 +81,6 @@ export class MountableView implements IFluidMountableView {
 		throw new Error("Failed to mount");
 	}
 
-	/**
-	 * {@inheritDoc IFluidMountableView.unmount}
-	 */
 	public unmount(): void {
 		// Do nothing if we are already unmounted.
 		if (this.containerElement === undefined) {
@@ -94,9 +89,8 @@ export class MountableView implements IFluidMountableView {
 
 		// Call appropriate cleanup methods on the view and then remove it from the DOM.
 		if (this.reactView !== undefined) {
-			// TODO: Remove rule disable once we move to the React 18 APIs.
-			// eslint-disable-next-line import-x/no-deprecated -- AB#18875
-			ReactDOM.unmountComponentAtNode(this.containerElement);
+			this.reactRoot?.unmount();
+			this.reactRoot = undefined;
 		}
 
 		this.containerElement = undefined;

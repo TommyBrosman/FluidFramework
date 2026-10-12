@@ -3,11 +3,11 @@
  * Licensed under the MIT License.
  */
 
+const { mkdirSync, writeFileSync } = require("node:fs");
 const path = require("path");
 const { BundleComparisonPlugin } = require("@mixer/webpack-bundle-compare/dist/plugin");
 const { BundleAnalyzerPlugin } = require("webpack-bundle-analyzer");
 const DuplicatePackageCheckerPlugin = require("@cerner/duplicate-package-checker-webpack-plugin");
-const { BannedModulesPlugin } = require("@fluidframework/bundle-size-tools");
 const {
 	isInternalVersionScheme,
 	fromInternalScheme,
@@ -18,6 +18,44 @@ const {
 // updated version string, which will not match the one in the main bundle. This will cause the bundle comparison to be
 // incorrect.
 const pkg = require("./package.json");
+
+class CompactStatsPlugin {
+	constructor(filename) {
+		this.filename = filename;
+	}
+
+	apply(compiler) {
+		compiler.hooks.done.tap("CompactStatsPlugin", (stats) => {
+			const statsJson = stats.toJson({
+				all: false,
+				chunks: true,
+				chunkModules: true,
+				entrypoints: true,
+				ids: true,
+				modules: true,
+				nestedModules: true,
+			});
+			const compactModules = (modules = []) =>
+				modules.map((module) => ({
+					name: module.name,
+					chunks: module.chunks,
+					modules: compactModules(module.modules),
+				}));
+			const compactStats = {
+				entrypoints: Object.fromEntries(
+					Object.entries(statsJson.entrypoints ?? {}).map(([name, entrypoint]) => [
+						name,
+						{ chunks: entrypoint.chunks },
+					]),
+				),
+				modules: compactModules(statsJson.modules),
+			};
+
+			mkdirSync(path.dirname(this.filename), { recursive: true });
+			writeFileSync(this.filename, JSON.stringify(compactStats));
+		});
+	}
+}
 
 // An array of webpack module rules. We build the list of rules dynamically depending on the version scheme used by the
 // package.
@@ -65,7 +103,22 @@ webpackModuleRules.push(
 	},
 );
 
-module.exports = {
+const forestProviderModuleRules = webpackModuleRules.map((rule) =>
+	rule.use === "ts-loader"
+		? {
+				...rule,
+				use: {
+					loader: "ts-loader",
+					options: {
+						onlyCompileBundledFiles: true,
+					},
+				},
+			}
+		: rule,
+);
+
+const bundleAnalysisConfig = {
+	name: "bundle-analysis",
 	entry: {
 		aqueduct: "./src/aqueduct",
 		azureClient: "./src/azureClient",
@@ -75,6 +128,7 @@ module.exports = {
 		directory: "./src/sharedDirectory",
 		experimentalSharedTree: "./src/experimentalSharedTree",
 		fluidFramework: "./src/fluidFramework",
+		fluidFrameworkAllAlpha: "./src/fluidFrameworkAllAlpha",
 		loader: "./src/loader",
 		map: "./src/sharedMap",
 		matrix: "./src/sharedMatrix",
@@ -91,6 +145,11 @@ module.exports = {
 	},
 	resolve: {
 		extensions: [".tsx", ".ts", ".js"],
+		// Block the Node-core `assert` polyfill from being bundled. It's very large in browser
+		// builds; consumers should use the assert API in @fluidframework/core-utils instead.
+		fallback: {
+			assert: false,
+		},
 	},
 	output: {
 		path: path.resolve(__dirname, "build"),
@@ -98,15 +157,6 @@ module.exports = {
 	},
 	node: false,
 	plugins: [
-		new BannedModulesPlugin({
-			bannedModules: [
-				{
-					moduleName: "assert",
-					reason:
-						"This module is very large when bundled in browser facing Javascript, instead use the assert API in @fluidframework/common-utils",
-				},
-			],
-		}),
 		new DuplicatePackageCheckerPlugin({
 			// Also show module that is requiring each duplicate package
 			verbose: true,
@@ -148,3 +198,31 @@ module.exports = {
 	// which provides more fine grained details than BundleAnalyzerPlugin, so its nice for manual investigations.
 	devtool: "source-map",
 };
+
+// These full emitted-package probes make the analyzer's raw stats exceed Node's maximum string
+// length when included in the main compilation. Build them separately and retain only the module
+// reachability data needed by forestProviderBundles.spec.ts.
+const forestProviderProbeConfig = {
+	name: "forest-provider-probes",
+	entry: {
+		sharedTreeDefault: "./src/sharedTree",
+		sharedTreeExpensiveDebugForest: "./src/sharedTreeExpensiveDebugForest",
+		sharedTreeOptimizedForest: "./src/sharedTreeOptimizedForest",
+		sharedTreeReferenceForest: "./src/sharedTreeReferenceForest",
+	},
+	mode: "production",
+	module: {
+		rules: forestProviderModuleRules,
+	},
+	resolve: bundleAnalysisConfig.resolve,
+	output: {
+		path: path.resolve(__dirname, "build/forest-provider-probes"),
+		library: "bundle",
+	},
+	node: false,
+	plugins: [
+		new CompactStatsPlugin(path.resolve(__dirname, "build/forest-provider-probes/stats.json")),
+	],
+};
+
+module.exports = [bundleAnalysisConfig, forestProviderProbeConfig];

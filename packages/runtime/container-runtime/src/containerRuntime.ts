@@ -22,6 +22,7 @@ import type {
 import { AttachState } from "@fluidframework/container-definitions";
 import type {
 	IContainerContext,
+	IContainerContextInternal,
 	IGetPendingLocalStateProps,
 	IRuntime,
 	IDeltaManager,
@@ -105,6 +106,7 @@ import {
 	createIdCompressor,
 	createSessionId,
 	deserializeIdCompressor,
+	SerializationVersion,
 	toIdCompressorWithCore,
 } from "@fluidframework/id-compressor/internal";
 import {
@@ -130,7 +132,7 @@ import type {
 	ISummarizerNodeWithGC,
 	StageControlsInternal,
 	IContainerRuntimeBaseInternal,
-	MinimumVersionForCollab,
+	OldestSupportedClientVersion,
 	ContainerExtensionExpectations,
 } from "@fluidframework/runtime-definitions/internal";
 import {
@@ -152,8 +154,8 @@ import type {
 	IEventSampler,
 	IFluidErrorBase,
 	ITelemetryGenericEventExt,
-	ITelemetryLoggerExt,
 	MonitoringContext,
+	TelemetryLoggerExt,
 } from "@fluidframework/telemetry-utils/internal";
 import {
 	DataCorruptionError,
@@ -162,8 +164,6 @@ import {
 	GenericError,
 	LoggingError,
 	PerformanceEvent,
-	// eslint-disable-next-line import-x/no-deprecated
-	TaggedLoggerAdapter,
 	UsageError,
 	createChildLogger,
 	createChildMonitoringContext,
@@ -175,7 +175,7 @@ import {
 	normalizeError,
 	toITelemetryLoggerExt,
 } from "@fluidframework/telemetry-utils/internal";
-import { gt } from "semver-ts";
+import { gt, gte as greaterThanOrEqual } from "semver-ts";
 import { v4 as uuid } from "uuid";
 
 import { BindBatchTracker } from "./batchTracker.js";
@@ -252,6 +252,7 @@ import {
 	OpSplitter,
 	Outbox,
 	RemoteMessageProcessor,
+	tryGetDeserializedRuntimeOpCopy,
 	type OutboundBatch,
 	type BatchResubmitInfo,
 } from "./opLifecycle/index.js";
@@ -270,6 +271,11 @@ import {
 	validateLoaderCompatibility,
 } from "./runtimeLayerCompatState.js";
 import { SignalTelemetryManager } from "./signalTelemetryProcessing.js";
+import {
+	VersionMarkResolver,
+	type IVersionMarkResolver,
+	inboundVersionMarkUpdate,
+} from "./versionMarks/index.js";
 // These types are imported as types here because they are present in summaryDelayLoadedModule, which is loaded dynamically when required.
 import {
 	aliasBlobName,
@@ -585,14 +591,13 @@ export const defaultRuntimeHeaderData: Required<RuntimeHeaderData> = {
 const defaultStagingCommitOptions = { squash: false };
 
 /**
- * @deprecated
- * Untagged logger is unsupported going forward. There are old loaders with old ContainerContexts that only
- * have the untagged logger, so to accommodate that scenario the below interface is used. It can be removed once
- * its usage is removed from TaggedLoggerAdapter fallback.
+ * Events raised by the ContainerRuntime for its own internal use.
  */
-interface OldContainerContextWithLogger extends Omit<IContainerContext, "taggedLogger"> {
-	logger: ITelemetryBaseLogger;
-	taggedLogger: undefined;
+interface IContainerRuntimeInternalEvents {
+	/**
+	 * Raised when the container transitions from having pending local operations to having none.
+	 */
+	opsSaved: () => void;
 }
 
 /**
@@ -735,7 +740,7 @@ function lastMessageFromMetadata(
  * to understand if/when it is hit.
  * We only want to log this once, to avoid spamming telemetry if we are wrong and these cases are hit commonly.
  */
-export let getSingleUseLegacyLogCallback = (logger: ITelemetryLoggerExt, type: string) => {
+export let getSingleUseLegacyLogCallback = (logger: TelemetryLoggerExt, type: string) => {
 	return (codePath: string): void => {
 		logger.sendTelemetryEvent({
 			eventName: "LegacyMessageFormat",
@@ -798,25 +803,47 @@ export interface LoadContainerRuntimeParams {
 	requestHandler?: (request: IRequest, runtime: IContainerRuntime) => Promise<IResponse>;
 
 	/**
-	 * Minimum version of the FF runtime that is required to collaborate on new documents.
-	 * The input should be a string that represents the minimum version of the FF runtime that should be
-	 * supported for collaboration. The format of the string must be in valid semver format.
+	 * Oldest version of Fluid Framework client that must be able to open and process documents
+	 * written by this container runtime.
+	 * @remarks
+	 * Choosing an older version may limit the features and write formats the application can use to
+	 * those supported by that version. The value must be valid SemVer.
 	 *
 	 * The inputted version will be used to determine the default configuration for
 	 * {@link IContainerRuntimeOptionsInternal} to ensure compatibility with the specified version.
 	 *
 	 * @example
-	 * minVersionForCollab: "2.0.0"
+	 * oldestSupportedClient: "2.0.0"
 	 *
 	 * @privateRemarks
 	 * Used to determine the default configuration for {@link IContainerRuntimeOptionsInternal} that affect the document schema.
-	 * For example, let's say that feature `foo` was added in 2.0 which introduces a new op type. Additionally, option `bar`
-	 * was added to `IContainerRuntimeOptionsInternal` in 2.0 to enable/disable `foo` since clients prior to 2.0 would not
-	 * understand the new op type. If a customer were to set minVersionForCollab to 2.0.0, then `bar` would be set to
-	 * enable `foo` by default. If a customer were to set minVersionForCollab to 1.0.0, then `bar` would be set to
+	 * For example, let's say that feature `foo` was added in 2.40 which introduces a new op type. Additionally, option `bar`
+	 * was added to `IContainerRuntimeOptionsInternal` in 2.40 to enable/disable `foo` since clients prior to 2.40 would not
+	 * understand the new op type. If a customer were to set oldestSupportedClient to 2.40.0, then `bar` would be set to
+	 * enable `foo` by default. If a customer were to set oldestSupportedClient to 2.0.0, then `bar` would be set to
 	 * disable `foo` by default.
+	 *
+	 * Internal features introduced by version:
+	 *
+	 * - `3.4.0` - Uses the V3 serialization format for the ID compressor.
+	 *
 	 */
-	minVersionForCollab?: MinimumVersionForCollab;
+	oldestSupportedClient?: OldestSupportedClientVersion;
+
+	/**
+	 * Oldest version of Fluid Framework client that must be able to open and process documents
+	 * written by this container runtime.
+	 *
+	 * @remarks
+	 * See {@link LoadContainerRuntimeParams.oldestSupportedClient} for compatibility implications.
+	 *
+	 * Specifying both `oldestSupportedClient` and `minVersionForCollab` is an error.
+	 *
+	 * @deprecated 2.116.0. To be removed in 3.10.0. Use
+	 * {@link LoadContainerRuntimeParams.oldestSupportedClient} instead.
+	 * See {@link https://github.com/microsoft/FluidFramework/issues/27851} for context.
+	 */
+	minVersionForCollab?: OldestSupportedClientVersion;
 }
 /**
  * This is meant to be used by a {@link @fluidframework/container-definitions#IRuntimeFactory} to instantiate a container runtime.
@@ -827,7 +854,10 @@ export interface LoadContainerRuntimeParams {
 export async function loadContainerRuntime(
 	params: LoadContainerRuntimeParams,
 ): Promise<IContainerRuntime & IRuntime> {
-	return ContainerRuntime.loadRuntime(params);
+	return ContainerRuntime.loadRuntime({
+		...params,
+		registry: new FluidDataStoreRegistry(params.registryEntries),
+	});
 }
 
 /**
@@ -836,6 +866,10 @@ export async function loadContainerRuntime(
  *
  * @param params - An object which specifies all required and optional params necessary to instantiate a runtime.
  * @returns An object containing the runtime.
+ *
+ * @privateRemarks
+ * By using loadRuntime2 instead of loadRuntime, this prevents mixinAttributor's overriding of loadRuntime from affecting this new API:
+ * this might cause unexpected issues.
  *
  * @legacy @alpha
  */
@@ -903,6 +937,8 @@ export class ContainerRuntime
 	 * {@link LoadContainerRuntimeParams} except internal, while still having layer compat obligations.
 	 * @privateRemarks
 	 * Despite this being `@internal`, `@fluidframework/test-utils` uses it in `createTestContainerRuntimeFactory` and assumes multiple versions of the package expose the same API.
+	 * To enable this code to know what version of this API it should use, loadRuntimeAPIVersion has been added.
+	 * This is a workaround for the relevant code in test-utils not tracking the package version, so it can't special case it off of that.
 	 *
 	 * Also note that `mixinAttributor` from `@fluid-experimental/attributor` overrides this function:
 	 * that will have to be updated if changing the signature of this function as well.
@@ -911,20 +947,20 @@ export class ContainerRuntime
 	 * `loadRuntime` could be removed (replaced by `loadRuntime2` which could be renamed back to `loadRuntime`).
 	 */
 	public static async loadRuntime(
-		params: LoadContainerRuntimeParams & {
-			/**
-			 * Constructor to use to create the ContainerRuntime instance.
-			 * @remarks
-			 * Defaults to {@link ContainerRuntime}.
-			 */
+		params: Omit<LoadContainerRuntimeParams, "registryEntries" | "runtimeOptions"> & {
+			registry: IFluidDataStoreRegistry;
 			containerRuntimeCtor?: typeof ContainerRuntime;
+			runtimeOptions?: IContainerRuntimeOptionsInternal;
 		},
 	): Promise<ContainerRuntime> {
-		return ContainerRuntime.loadRuntime2({
-			...params,
-			registry: new FluidDataStoreRegistry(params.registryEntries),
-		}).then((r) => r.runtime);
+		return ContainerRuntime.loadRuntime2(params).then((r) => r.runtime);
 	}
+
+	/**
+	 * Hack to allow test-utils to detect which version of loadRuntime API to expect.
+	 * See note in loadRuntime's private remarks.
+	 */
+	public static readonly loadRuntimeAPIVersion: number | undefined = 2;
 
 	/**
 	 * Load the stores from a snapshot and returns an object containing the runtime.
@@ -960,18 +996,35 @@ export class ContainerRuntime
 			runtimeOptions = {} satisfies IContainerRuntimeOptionsInternal,
 			containerScope = {},
 			containerRuntimeCtor = ContainerRuntime,
-			minVersionForCollab = defaultMinVersionForCollab,
+			oldestSupportedClient: oldestSupportedClientParam,
+			// eslint-disable-next-line import-x/no-deprecated -- accepted for compatibility. See #27851
+			minVersionForCollab: deprecatedMinVersionForCollab,
 		} = params;
 
-		// If taggedLogger exists, use it. Otherwise, wrap the vanilla logger:
-		// back-compat: Remove the TaggedLoggerAdapter fallback once all the host are using loader > 0.45
-		const backCompatContext: IContainerContext | OldContainerContextWithLogger = context;
-		const passLogger =
-			backCompatContext.taggedLogger ??
-			// eslint-disable-next-line import-x/no-deprecated
-			new TaggedLoggerAdapter((backCompatContext as OldContainerContextWithLogger).logger);
+		if (
+			oldestSupportedClientParam !== undefined &&
+			deprecatedMinVersionForCollab !== undefined
+		) {
+			throw new UsageError(
+				"Specify only one of oldestSupportedClient or minVersionForCollab (deprecated), not both.",
+			);
+		}
+		// Internally this value is still threaded through as `minVersionForCollab`. Renaming the
+		// Runtime/DataStore/DDS propagation path crosses API layers and requires a staged migration
+		// where both names coexist for old and new consumers. See #27851.
+		const minVersionForCollab =
+			oldestSupportedClientParam ??
+			deprecatedMinVersionForCollab ??
+			defaultMinVersionForCollab;
+
+		if (context.taggedLogger === undefined) {
+			const error = new UsageError("Loader must provide a tagged logger");
+			context.closeFn(error);
+			throw error;
+		}
+
 		const logger = createChildLogger({
-			logger: passLogger,
+			logger: context.taggedLogger,
 			properties: {
 				all: {
 					runtimeVersion: pkgVersion,
@@ -983,8 +1036,8 @@ export class ContainerRuntime
 
 		// Some options require a minimum version of the FF runtime to operate, so the default configs will be generated
 		// based on the minVersionForCollab.
-		// For example, if minVersionForCollab is set to "1.0.0", the default configs will ensure compatibility with FF runtime
-		// 1.0.0 or later. If the minVersionForCollab is set to "2.10.0", the default values will be generated to ensure compatibility
+		// For example, if minVersionForCollab is set to "2.0.0", the default configs will ensure compatibility with FF runtime
+		// 2.0.0 or later. If the minVersionForCollab is set to "2.10.0", the default values will be generated to ensure compatibility
 		// with FF runtime 2.10.0 or later.
 		if (!isValidMinVersionForCollab(minVersionForCollab)) {
 			throw new UsageError(
@@ -1179,6 +1232,10 @@ export class ContainerRuntime
 			idCompressorMode = desiredIdCompressorMode;
 		}
 
+		const idCompressorSerializationVersion = greaterThanOrEqual(minVersionForCollab, "3.4.0")
+			? SerializationVersion.V3
+			: SerializationVersion.V2;
+
 		const createIdCompressorFn = (): IIdCompressor & IIdCompressorCore => {
 			/**
 			 * Because the IdCompressor emits so much telemetry, this function is used to sample
@@ -1200,16 +1257,20 @@ export class ContainerRuntime
 				return toIdCompressorWithCore(
 					deserializeIdCompressor(
 						pendingLocalState.pendingIdCompressorState,
+						idCompressorSerializationVersion,
 						toITelemetryLoggerExt(compressorLogger),
 					),
 				);
 			} else if (serializedIdCompressor === undefined) {
-				return toIdCompressorWithCore(createIdCompressor(compressorLogger));
+				return toIdCompressorWithCore(
+					createIdCompressor(idCompressorSerializationVersion, compressorLogger),
+				);
 			} else {
 				return toIdCompressorWithCore(
 					deserializeIdCompressor(
 						serializedIdCompressor,
 						createSessionId(),
+						idCompressorSerializationVersion,
 						toITelemetryLoggerExt(compressorLogger),
 					),
 				);
@@ -1360,7 +1421,25 @@ export class ContainerRuntime
 		return this._getAttachState();
 	}
 
-	public readonly isReadOnly = (): boolean => this.deltaManager.readOnlyInfo.readonly === true;
+	/**
+	 * Whether local op submission is currently disallowed.
+	 *
+	 * This is `true` in two distinct situations.
+	 *
+	 * First: the delta manager reports a read-only connection (host/service-imposed permission or connection state — the historical meaning of `readOnly`).
+	 *
+	 * Second: the `PendingStateManager` is replaying stashed ops (`isApplyingStashedOps`). During this window DDSes must not submit new local ops, as doing so would interleave fresh content ahead of the stashed pending stream and corrupt pending local state. Surfacing it through `isReadOnly()` lets DDSes that consult `readOnly` at realize time self-suppress; see the apply-lifecycle docs on `PendingStateManager` for the full rationale.
+	 *
+	 * Note this layers a third meaning ("transiently quiescing for stashed-op replay") onto the `readOnly` predicate, which is broader than its host/connection-permission origin.
+	 */
+	public readonly isReadOnly = (): boolean =>
+		// `_deltaManager` and `pendingStateManager` are both assigned partway
+		// through the constructor; `baseLogger` is built earlier and stamps
+		// `isReadOnly` on every error event (e.g. layer-compat failures
+		// during construction), so this can be called before either is
+		// assigned. Optional chains keep that window safe.
+		this._deltaManager?.readOnlyInfo.readonly === true ||
+		this.pendingStateManager?.isApplyingStashedOps === true;
 
 	/**
 	 * Current session schema - defines what options are on & off.
@@ -1406,9 +1485,6 @@ export class ContainerRuntime
 		}
 	}
 
-	/**
-	 * {@inheritDoc @fluidframework/runtime-definitions#IContainerRuntimeBase.generateDocumentUniqueId}
-	 */
 	public generateDocumentUniqueId(): string | number {
 		return this._idCompressor?.generateDocumentUniqueId() ?? uuid();
 	}
@@ -1504,11 +1580,35 @@ export class ContainerRuntime
 	}
 
 	private lastEmittedDirty: boolean;
+	/**
+	 * The op-only portion of dirty state as of the last evaluation.
+	 *
+	 * @remarks Tracked separately from {@link ContainerRuntime.lastEmittedDirty} so internal consumers
+	 * that specifically care about operation acknowledgement do not depend on the host-facing aggregate.
+	 */
+	private lastOpDirty: boolean;
 	private emitDirtyDocumentEvent = true;
+	/**
+	 * Tracks in-progress pending-op-state notifications.
+	 *
+	 * @remarks Used to defer host-facing dirty-state publication to the outermost notification. See
+	 * {@link ContainerRuntime.publishDirtyState}.
+	 */
+	private readonly pendingOpStateNotificationRunner = new RunCounter();
+	private lastEmittedHasStagedChanges: boolean;
 	private readonly useDeltaManagerOpsProxy: boolean;
 	private readonly closeSummarizerDelayMs: number;
 
 	private readonly signalTelemetryManager = new SignalTelemetryManager();
+
+	private readonly internalEvents = createEmitter<IContainerRuntimeInternalEvents>();
+
+	/**
+	 * Reports op-only dirty state to loaders that can keep it separate from host-facing dirty state.
+	 */
+	private readonly updatePendingOpState:
+		| IContainerContextInternal["updatePendingOpState"]
+		| undefined;
 
 	/**
 	 * Summarizer is responsible for coordinating when to send generate and send summaries.
@@ -1522,11 +1622,19 @@ export class ContainerRuntime
 	private readonly blobManager: BlobManager;
 	private readonly pendingStateManager: PendingStateManager;
 	private readonly duplicateBatchDetector: DuplicateBatchDetector | undefined;
+	private readonly versionMarkResolverInternal: VersionMarkResolver;
+	/**
+	 * Host-facing version mark resolver.
+	 */
+	public get versionMarkResolver(): IVersionMarkResolver {
+		return this.versionMarkResolverInternal;
+	}
 	private readonly outbox: Outbox;
 	private readonly garbageCollector: IGarbageCollector;
 
 	private readonly channelCollection: ChannelCollection;
 	private readonly remoteMessageProcessor: RemoteMessageProcessor;
+	private versionMarkInboundBatchId: string | undefined;
 
 	/**
 	 * The last message processed at the time of the last summary.
@@ -1597,6 +1705,8 @@ export class ContainerRuntime
 
 	private readonly extensions = new Map<ContainerExtensionId, ExtensionEntry>();
 
+	public readonly baseLogger: ITelemetryBaseLogger;
+
 	/***/
 	protected constructor(
 		context: IContainerContext,
@@ -1610,7 +1720,7 @@ export class ContainerRuntime
 		private readonly runtimeOptions: Readonly<ContainerRuntimeOptionsInternal>,
 		private readonly containerScope: FluidObject,
 		// Create a custom ITelemetryBaseLogger to output telemetry events.
-		public readonly baseLogger: ITelemetryBaseLogger,
+		baseLogger: ITelemetryBaseLogger,
 		existing: boolean,
 
 		blobManagerLoadInfo: IBlobManagerLoadInfo,
@@ -1620,7 +1730,7 @@ export class ContainerRuntime
 		private readonly documentsSchemaController: DocumentsSchemaController,
 		featureGatesForTelemetry: Record<string, boolean | number | undefined>,
 		provideEntryPoint: (containerRuntime: IContainerRuntime) => Promise<FluidObject>,
-		public readonly minVersionForCollab: MinimumVersionForCollab,
+		public readonly minVersionForCollab: OldestSupportedClientVersion,
 		private readonly requestHandler?: (
 			request: IRequest,
 			runtime: IContainerRuntime,
@@ -1656,6 +1766,7 @@ export class ContainerRuntime
 			getConnectionState,
 		} = context;
 
+		this.updatePendingOpState = (context as IContainerContextInternal).updatePendingOpState;
 		this.getConnectionState = getConnectionState;
 
 		// In old loaders without dispose functionality, closeFn is equivalent but will also switch container to readonly mode
@@ -1663,14 +1774,19 @@ export class ContainerRuntime
 
 		this.isSnapshotInstanceOfISnapshot = snapshotWithContents !== undefined;
 
+		this.baseLogger = createChildLogger({
+			logger: baseLogger,
+			properties: {
+				error: {
+					inStagingMode: () => this.inStagingMode,
+					isApplyingStashedOps: () => this.pendingStateManager?.isApplyingStashedOps,
+					isReadOnly: () => this.isReadOnly(),
+				},
+			},
+		});
 		this.mc = createChildMonitoringContext({
 			logger: this.baseLogger,
 			namespace: "ContainerRuntime",
-			properties: {
-				all: {
-					inStagingMode: this.inStagingMode,
-				},
-			},
 		});
 
 		// Validate that the Loader is compatible with this Runtime.
@@ -1840,7 +1956,72 @@ export class ContainerRuntime
 			},
 			pendingRuntimeState?.pending,
 			this.baseLogger,
+			{
+				// PSM has cleared `isApplyingStashedOps`; `isReadOnly()` now
+				// reflects the network-readonly state again. Fan out so DDSes
+				// know they can submit once more. No open hook is needed —
+				// the apply window opens before `channelCollection` exists,
+				// so a fanout there would be a no-op; data stores instead
+				// pick up the initial readonly state from `isReadOnly()`
+				// when they're first asked.
+				onAfterStashedOpsApplied: () => {
+					this.notifyReadOnlyState();
+				},
+			},
 		);
+		// fetchOps is an internal-only capability the loader injects (IContainerContextInternal), not part
+		// of the public IContainerContext contract, so narrow to read it.
+		const fetchOps = (context as IContainerContextInternal).fetchOps;
+		this.versionMarkResolverInternal = new VersionMarkResolver({
+			getCurrentSequenceNumber: () => this.deltaManager.lastSequenceNumber,
+			getCurrentTimestamp: () => this.getCurrentReferenceTimestampMs(),
+			getCurrentMinimumSequenceNumber: () => this.deltaManager.minimumSequenceNumber,
+			getCurrentPendingBatchId: () => this.pendingStateManager.getMostRecentPendingBatchId(),
+			logger: createChildLogger({
+				logger: this.baseLogger,
+				namespace: "VersionMarkResolver",
+			}),
+			// Seal the current outbound batch so a just-submitted edit gets a stable batchId in the pending
+			// state before sealAndCaptureVersionMark reads it (a batchId is only assigned when flushed).
+			flushPendingBatch: () => this.flush(),
+			// Keep this optional while a supported older loader may not provide fetchOps. AB#81034 tracks
+			// making it required once the Runtime -> Loader compatibility window reaches generation 21.
+			getHistoricalOpReader: fetchOps ? () => ({ fetchMessages: fetchOps }) : undefined,
+			// Unpack scanned historical ops through the same pipeline the live inbound path uses, so a
+			// chunked batch's batchId (only restored after reassembly) is observed by the history scan too.
+			createHistoricalOpUnpacker: fetchOps
+				? () => {
+						// A fresh processor per scan: it holds chunk-reassembly state, so it must not share
+						// the live inbound processor's state. submit/size args are unused on the read path.
+						const scanProcessor = new RemoteMessageProcessor(
+							new OpSplitter(
+								[],
+								submitBatchFn,
+								runtimeOptions.chunkSizeInBytes,
+								runtimeOptions.maxBatchSizeInBytes,
+								this.mc.logger,
+								{ allowInitialPartialChunkStream: true },
+							),
+							new OpDecompressor(this.mc.logger),
+							new OpGroupingManager(
+								{ groupedBatchingEnabled: this.groupedBatchingEnabled },
+								this.mc.logger,
+							),
+						);
+						return (op) => {
+							// Only runtime ops carry batches; deserialize a copy so the reader-owned op stays untouched.
+							const messageCopy = tryGetDeserializedRuntimeOpCopy(op);
+							if (messageCopy === undefined) {
+								return undefined;
+							}
+							return scanProcessor.process(
+								messageCopy,
+								getSingleUseLegacyLogCallback(this.mc.logger, messageCopy.type),
+							);
+						};
+					}
+				: undefined,
+		});
 
 		let outerDeltaManager: IDeltaManagerFull = this.innerDeltaManager;
 		this.useDeltaManagerOpsProxy =
@@ -1890,20 +2071,46 @@ export class ContainerRuntime
 			this.mc.config.getNumber("Fluid.ContainerRuntime.StagingModeAutoFlushThreshold") ??
 			runtimeOptions.stagingModeAutoFlushThreshold ??
 			defaultStagingModeAutoFlushThreshold;
-		this.batchIdTrackingEnabled =
-			this.mc.config.getBoolean("Fluid.Container.enableOfflineFull") ??
-			this.mc.config.getBoolean("Fluid.ContainerRuntime.enableBatchIdTracking") ??
-			false;
+		// BatchId tracking powers DuplicateBatchDetector (catching forked-container duplicates)
+		// and is also a prerequisite for the Offline Load feature. It is enabled by default
+		// when both TurnBased flush mode and grouped batching are active; the kill-switch
+		// below allows disabling it without a code change if a regression is observed.
+		// Grouped batching is required because resubmits can produce empty batches that must
+		// still be sent on the wire as a placeholder grouped batch to preserve their batchId
+		// (see OpGroupingManager.createEmptyGroupedBatch / outbox.flushEmptyBatch).
+		// Offline Load requires all three prerequisites (TurnBased, grouped batching, and
+		// batchId tracking not killed by config), so a consumer that opts into it without
+		// them gets an explicit UsageError rather than silent degradation.
+		const offlineLoadRequested =
+			this.mc.config.getBoolean("Fluid.Container.enableOfflineFull") === true;
+		const disableBatchIdTracking =
+			this.mc.config.getBoolean("Fluid.ContainerRuntime.DisableBatchIdTracking") === true;
 
-		if (this.batchIdTrackingEnabled && this._flushMode !== FlushMode.TurnBased) {
+		if (offlineLoadRequested && this._flushMode !== FlushMode.TurnBased) {
 			const error = new UsageError("Offline mode is only supported in turn-based mode");
 			this.closeFn(error);
 			throw error;
 		}
+		if (offlineLoadRequested && !this.groupedBatchingEnabled) {
+			const error = new UsageError("Offline mode requires grouped batching to be enabled");
+			this.closeFn(error);
+			throw error;
+		}
+		if (offlineLoadRequested && disableBatchIdTracking) {
+			const error = new UsageError(
+				"Offline mode requires batchId tracking; remove Fluid.ContainerRuntime.DisableBatchIdTracking",
+			);
+			this.closeFn(error);
+			throw error;
+		}
 
-		// DuplicateBatchDetection is only enabled if Offline Load is enabled
-		// It maintains a cache of all batchIds/sequenceNumbers within the collab window.
-		// Don't waste resources doing so if not needed.
+		this.batchIdTrackingEnabled =
+			!disableBatchIdTracking &&
+			this._flushMode === FlushMode.TurnBased &&
+			this.groupedBatchingEnabled;
+
+		// DuplicateBatchDetector maintains a cache of all batchIds/sequenceNumbers within the
+		// collab window. Skip allocating it when batchId tracking is off.
 		if (this.batchIdTrackingEnabled) {
 			this.duplicateBatchDetector = new DuplicateBatchDetector(recentBatchInfo);
 		}
@@ -2130,8 +2337,13 @@ export class ContainerRuntime
 			closeSummarizerDelayOverride ?? defaultCloseSummarizerDelayMs;
 
 		// We haven't emitted dirty/saved yet, but this is the baseline so we know to emit when it changes
+		this.lastOpDirty = this.computeCurrentOpDirtyState();
+		this.updatePendingOpState?.(this.lastOpDirty);
 		this.lastEmittedDirty = this.computeCurrentDirtyState();
 		context.updateDirtyContainerState(this.lastEmittedDirty);
+
+		// We haven't emitted hasStagedChangesChanged yet, but this is the baseline so we know to emit when it changes
+		this.lastEmittedHasStagedChanges = this.computeCurrentHasStagedChanges();
 
 		// Reference Sequence Number may have just changed, and it must be consistent across a batch,
 		// so we should flush now to clear the way for the next ops.
@@ -2161,6 +2373,14 @@ export class ContainerRuntime
 			telemetryDocumentId: this.telemetryDocumentId,
 			groupedBatchingEnabled: this.groupedBatchingEnabled,
 			initialSequenceNumber: this.deltaManager.initialSequenceNumber,
+			// Number of ops since the last summary that this client is aware of (including ops still
+			// queued for processing). Computed as the gap between the latest known op sequence number
+			// and the sequence number of the message at which the last summary was taken (per snapshot
+			// metadata). Falls back to lastKnownSeqNumber when no prior summary message is recorded
+			// (e.g. new container or older snapshot without metadata).
+			numUnsummarizedOps:
+				this.deltaManager.lastKnownSeqNumber -
+				(this.messageAtLastSummary?.sequenceNumber ?? 0),
 			minVersionForCollab: this.minVersionForCollab,
 			// logging hardware telemetry
 			deviceSpec: { ...getDeviceSpec() },
@@ -2224,11 +2444,11 @@ export class ContainerRuntime
 	// #region `IFluidParentContext` APIs that should not be called on Root
 
 	public makeLocallyVisible(): void {
-		assert(false, 0x8eb /* should not be called */);
+		fail(0x8eb /* should not be called */);
 	}
 
 	public setChannelDirty(address: string): void {
-		assert(false, 0x909 /* should not be called */);
+		fail(0x909 /* should not be called */);
 	}
 
 	// #endregion
@@ -2289,8 +2509,18 @@ export class ContainerRuntime
 		if (this.isSummarizerClient) {
 			// We want to dynamically import any thing inside summaryDelayLoadedModule module only when we are the summarizer client,
 			// so that all non summarizer clients don't have to load the code inside this module.
+			// Import the delay-loaded module by its leaf path rather than through the `./summary/index.js` barrel,
+			// which is also statically imported above for summarization dependencies every client loads
+			// (SummaryManager, SummaryCollection, SummarizerClientElection, etc.). A bundler that traces re-exports
+			// per symbol (e.g. webpack honoring sideEffects + providedExports) already keeps the summarizer out of
+			// the initial chunk even if this dynamic import targets the barrel, because the barrel's static importers
+			// use only non-summarizer symbols. A bundler without that analysis would instead treat the
+			// statically-imported barrel as making the whole summarizer subgraph available and fold it into the
+			// initial chunk. Targeting summaryDelayLoadedModule/index.js directly makes the split deterministic
+			// across bundlers.
 			const module = await import(
-				/* webpackChunkName: "summarizerDelayLoadedModule" */ "./summary/index.js"
+				// eslint-disable-next-line import-x/no-internal-modules -- Needed to import the delay-loaded module directly.
+				/* webpackChunkName: "summarizerDelayLoadedModule" */ "./summary/summaryDelayLoadedModule/index.js"
 			);
 			this._summarizer = new module.Summarizer(
 				this /* ISummarizerRuntime */,
@@ -2637,9 +2867,6 @@ export class ContainerRuntime
 		}
 	}
 
-	/**
-	 * {@inheritDoc @fluidframework/container-definitions#IRuntime.getEntryPoint}
-	 */
 	public async getEntryPoint(): Promise<FluidObject> {
 		return this.entryPoint;
 	}
@@ -2779,10 +3006,33 @@ export class ContainerRuntime
 			return;
 		}
 
+		// Invariant: the canSendOps edge in `setConnectionStateCore` — the
+		// only caller of this method — cannot fire while
+		// `applyStashedOpsAt` is in flight, because the loader awaits the
+		// apply before transitioning the runtime to a write-capable
+		// connection. If this assert ever fires, that contract has changed
+		// and the submit guard at `submit()` would catch a runtime-internal
+		// resubmit (`Rejoin`, `GC`, `FluidDataStoreOp`) for an op type
+		// outside the apply-window allowlist.
+		//
+		// The precondition is held by the load sequence: `loadRuntime2`
+		// awaits `pendingStateManager.applyStashedOpsAt(...)` before
+		// returning the runtime, and the loader gates `setLoaded` on that
+		// completion before any write-capable connection edge fires. A
+		// maintainer reordering either sequence (or adding a new
+		// `canSendOps` edge that fires before the apply resolves) is what
+		// would trip this assert.
+		// @see {@link ContainerRuntime.loadRuntime2} (awaits `applyStashedOpsAt`)
+		assert(
+			!this.pendingStateManager.isApplyingStashedOps,
+			0xd01 /* replayPendingStates must not be called during stashed-op apply window */,
+		);
+
 		// Replaying is an internal operation and we don't want to generate noise while doing it.
 		// So temporarily disable dirty state change events, and save the old state.
 		// When we're done, we'll emit the event if the state changed.
 		const oldState = this.lastEmittedDirty;
+		const oldOpState = this.lastOpDirty;
 		assert(this.emitDirtyDocumentEvent, 0x127 /* "dirty document event not set on replay" */);
 		this.emitDirtyDocumentEvent = false;
 
@@ -2797,6 +3047,7 @@ export class ContainerRuntime
 		} finally {
 			// Restore the old state, re-enable event emit
 			this.lastEmittedDirty = oldState;
+			this.lastOpDirty = oldOpState;
 			this.emitDirtyDocumentEvent = true;
 		}
 
@@ -2894,8 +3145,14 @@ export class ContainerRuntime
 		}
 	}
 
-	private readonly notifyReadOnlyState = (readonly: boolean): void =>
-		this.channelCollection.notifyReadOnlyState(readonly);
+	// Boolean payload from the `"readonly"` delta-manager event is intentionally
+	// ignored — `isReadOnly()` aggregates delta-manager readonly with the PSM
+	// apply window, and that aggregation is the source of truth for fanout.
+	// `channelCollection?.` guards against future wiring changes; both callers
+	// today (the `"readonly"` listener and `onAfterStashedOpsApplied`) fire
+	// after `channelCollection` is assigned.
+	private readonly notifyReadOnlyState = (_readonly?: boolean): void =>
+		this.channelCollection?.notifyReadOnlyState(this.isReadOnly());
 
 	public setConnectionState(canSendOps: boolean, clientId?: string): void {
 		this.setConnectionStateToConnectedOrDisconnected(canSendOps, clientId);
@@ -3021,6 +3278,13 @@ export class ContainerRuntime
 
 		if (canSendOpsChanged) {
 			this.replayPendingStates();
+			// replayPendingStates() can synchronously reenter this method, e.g. via a host listener
+			// reacting to a dirty-state change by calling disconnect(). The nested call has already
+			// propagated the newer connection state, so continuing here would overwrite it -- and leave
+			// the runtime disagreeing with its children -- using our now-stale argument.
+			if (this.canSendOps !== canSendOps) {
+				return;
+			}
 		}
 
 		this.channelCollection.setConnectionState(canSendOps, clientId);
@@ -3135,22 +3399,43 @@ export class ContainerRuntime
 						"Duplicate batch - The same batch was sequenced twice",
 						{ batchId: batchStart.batchId },
 					);
-
+					const batchIdExplicit = batchStart.batchId !== undefined;
+					const otherBatchIdExplicit = result.otherBatchInfo?.batchIdExplicit ?? false;
 					this.mc.logger.sendTelemetryEvent(
 						{
 							eventName: "DuplicateBatch",
 							details: {
 								batchId: batchStart.batchId,
+								batchIdExplicit,
 								clientId: batchStart.clientId,
 								batchStartCsn: batchStart.batchStartCsn,
 								size: inboundResult.length,
 								duplicateBatchSequenceNumber: result.otherSequenceNumber,
+								// Identifying info for the ORIGINAL occurrence of this batch, so we can
+								// disambiguate the duplicate's source (e.g. resubmit vs fresh submit, same
+								// vs different wire clientId). Undefined fields indicate the original was
+								// loaded from a summary snapshot rather than seen at runtime.
+								otherClientId: result.otherBatchInfo?.clientId,
+								otherBatchStartCsn: result.otherBatchInfo?.batchStartCsn,
+								otherBatchIdExplicit,
+								otherFromSnapshot: result.otherBatchInfo === undefined,
 								...extractSafePropertiesFromMessage(batchStart.keyMessage),
+								// For grouped batches, `keyMessage` is one of the sub-messages produced by
+								// `OpGroupingManager.ungroupOp`, which overwrites `clientSequenceNumber`
+								// with a synthetic counter (1, 2, 3, ...). Override with the real outer
+								// envelope's clientSequenceNumber so downstream telemetry doesn't get a
+								// misleading "fake csn" value.
+								messageClientSequenceNumber: batchStart.batchStartCsn,
 							},
 						},
 						error,
 					);
-					throw error;
+					// Only throw the error if either the current batch or the other batch has an explicit batchId since that indicates a meaningful duplication scenario
+					// coming from our batch readings rather than a server outage scenario.
+					const shouldThrowOnDuplicate = batchIdExplicit || otherBatchIdExplicit;
+					if (shouldThrowOnDuplicate) {
+						throw error;
+					}
 				}
 			}
 
@@ -3161,6 +3446,28 @@ export class ContainerRuntime
 				message: ISequencedDocumentMessage;
 				localOpMetadata?: unknown;
 			}[] = this.pendingStateManager.processInboundMessages(inboundResult, local);
+
+			// Record the version-mark point for a completed batch (its last op's sequence number), carrying
+			// the batch id across a piecemeal batch's messages. This runs only AFTER processInboundMessages
+			// has validated the batch: that call throws (fork detection / pending-content mismatch) for a
+			// batch that must be rejected. processInboundBatch synchronously notifies listeners, which an
+			// app uses to promote a mark in an external store - an irreversible side effect - so it must not
+			// fire for a batch validation is about to reject. Gated on isTracking so a container that never
+			// uses version marks does no per-batch work here (mirrors #22497's DuplicateBatchDetector gating).
+			if (this.versionMarkResolverInternal.isTracking) {
+				const versionMarkUpdate = inboundVersionMarkUpdate(
+					inboundResult,
+					this.versionMarkInboundBatchId,
+				);
+				if (versionMarkUpdate.sequenced !== undefined) {
+					this.versionMarkResolverInternal.processInboundBatch(
+						versionMarkUpdate.sequenced.batchId,
+						versionMarkUpdate.sequenced.sequenceNumber,
+						versionMarkUpdate.sequenced.timestamp,
+					);
+				}
+				this.versionMarkInboundBatchId = versionMarkUpdate.carriedBatchId;
+			}
 
 			if (inboundResult.type !== "fullBatch") {
 				assert(
@@ -3434,7 +3741,7 @@ export class ContainerRuntime
 			case ContainerMessageType.ChunkedOp: {
 				// From observability POV, we should not expose the rest of the system (including "op" events on object) to these messages.
 				// Also resetReconnectCount() would be wrong - see comment that was there before this change was made.
-				assert(false, 0x93d /* should not even get here */);
+				fail(0x93d /* should not even get here */);
 			}
 			case ContainerMessageType.Rejoin: {
 				break;
@@ -3590,11 +3897,14 @@ export class ContainerRuntime
 			this.closeFn(error2);
 			throw error2;
 		}
+
+		// Flushing moves any staged batch from the Outbox into the PendingStateManager. Since
+		// computeCurrentHasStagedChanges() now also considers a non-empty Outbox in Staging Mode, the
+		// externally-visible value shouldn't change here, but re-checking is cheap and keeps this
+		// method robust to future changes in how the two are tracked.
+		this.updateHasStagedChangesState();
 	}
 
-	/**
-	 * {@inheritDoc @fluidframework/runtime-definitions#IContainerRuntimeBase.orderSequentially}
-	 */
 	public orderSequentially<T>(callback: () => T): T {
 		let checkpoint: IBatchCheckpoint | undefined;
 		let stageControls: StageControlsInternal | undefined;
@@ -3772,6 +4082,7 @@ export class ContainerRuntime
 						},
 					);
 					this.updateDocumentDirtyState();
+					this.updateHasStagedChangesState();
 					return batchInfos;
 				}, "discard"),
 			commitChanges: (options) => {
@@ -3779,10 +4090,12 @@ export class ContainerRuntime
 				exitStagingMode(() => {
 					// Replay all staged batches in typical FIFO order.
 					// We'll be out of staging mode so they'll be sent to the service finally.
-					return this.pendingStateManager.replayPendingStates({
+					const batchInfos = this.pendingStateManager.replayPendingStates({
 						committingStagedBatches: true,
 						squash,
 					});
+					this.updateHasStagedChangesState();
+					return batchInfos;
 				}, "commit");
 			},
 		};
@@ -3902,10 +4215,57 @@ export class ContainerRuntime
 	 * Returns true if the container is dirty: not attached, or has pending user messages (ignores "non-dirtyable" ones though)
 	 */
 	private computeCurrentDirtyState(): boolean {
+		return this.computeCurrentOpDirtyState();
+	}
+
+	/**
+	 * Returns the operation-only portion of dirty state: not attached, or has pending user messages
+	 * (ignoring non-dirtyable messages).
+	 */
+	private computeCurrentOpDirtyState(): boolean {
 		return (
 			this.attachState !== AttachState.Attached ||
 			this.pendingStateManager.hasPendingUserChanges() ||
 			this.outbox.containsUserChanges()
+		);
+	}
+
+	/**
+	 * The op-only portion of dirty state as of the last evaluation.
+	 */
+	private get isOpDirty(): boolean {
+		return this.lastOpDirty;
+	}
+
+	/**
+	 * Returns true if there are any staged changes, i.e. changes submitted while in Staging Mode
+	 * (see {@link @fluidframework/runtime-definitions#IContainerRuntimeBaseInternal.enterStagingMode})
+	 * that have not yet been discarded or committed.
+	 *
+	 * @remarks This is distinct from {@link ContainerRuntime.isDirty}: a container may be dirty due to
+	 * ordinary unacknowledged local changes without having any staged changes.
+	 */
+	public get hasStagedChanges(): boolean {
+		// Rather than recomputing this in the moment, just regurgitate the last emitted state.
+		return this.lastEmittedHasStagedChanges;
+	}
+
+	/**
+	 * Returns true if there are currently any staged (not yet discarded or committed) changes pending.
+	 *
+	 * @remarks While in Staging Mode, newly submitted ops sit in the Outbox until the next flush before
+	 * they're moved to the PendingStateManager (where `pendingStateManager.hasStagedChanges()` looks).
+	 * So we also check the Outbox here, otherwise there would be a window between submit and flush where
+	 * staged changes exist but this would incorrectly report false.
+	 *
+	 * @remarks We don't care about the type of ops in the Outbox here (unlike dirty state), just whether
+	 * there's anything queued at all, for consistency with how `pendingStateManager.hasStagedChanges()`
+	 * doesn't discriminate by op type either.
+	 */
+	private computeCurrentHasStagedChanges(): boolean {
+		return (
+			this.pendingStateManager.hasStagedChanges() ||
+			(this.inStagingMode && !this.outbox.isEmpty)
 		);
 	}
 
@@ -4034,7 +4394,7 @@ export class ContainerRuntime
 		/**
 		 * Logger to use for correlated summary events
 		 */
-		summaryLogger?: ITelemetryLoggerExt;
+		summaryLogger?: TelemetryLoggerExt;
 		/**
 		 * True to run garbage collection before summarizing; defaults to true
 		 */
@@ -4207,7 +4567,7 @@ export class ContainerRuntime
 				return this.channelCollection.getDataStorePackagePath(nodePath);
 			}
 			default: {
-				assert(false, 0x2de /* "Package path requested for unsupported node type." */);
+				fail(0x2de /* "Package path requested for unsupported node type." */);
 			}
 		}
 	}
@@ -4243,7 +4603,7 @@ export class ContainerRuntime
 			/**
 			 * Logger to use for logging GC events
 			 */
-			logger?: ITelemetryLoggerExt;
+			logger?: TelemetryLoggerExt;
 			/**
 			 * True to run GC sweep phase after the mark phase
 			 */
@@ -4336,32 +4696,40 @@ export class ContainerRuntime
 			);
 		}
 
-		// If the container is dirty, i.e., there are pending unacked ops, the summary will not be eventual consistent
-		// and it may even be incorrect. So, wait for the container to be saved with a timeout. If the container is not
-		// saved within the timeout, check if it should be failed or can continue.
-		if (this.isDirty) {
+		// Pending unacknowledged operations can make the summary inconsistent. Wait for the op-only state
+		// to become saved rather than coupling summarization to the host-facing aggregate dirty state.
+		if (this.isOpDirty) {
 			const countBefore = this.pendingMessagesCount;
 			// The timeout for waiting for pending ops can be overridden via configurations.
 			const pendingOpsTimeout =
 				this.mc.config.getNumber("Fluid.Summarizer.waitForPendingOpsTimeoutMs") ??
 				defaultPendingOpsWaitTimeoutMs;
 			await new Promise<void>((resolve, reject) => {
-				const timeoutId = setTimeout(() => resolve(), pendingOpsTimeout);
-				this.once("saved", () => {
-					clearTimeout(timeoutId);
+				const timeoutId = setTimeout(() => {
+					cleanup();
+					resolve();
+				}, pendingOpsTimeout);
+				const offOpsSaved = this.internalEvents.on("opsSaved", () => {
+					cleanup();
 					resolve();
 				});
-				this.once("dispose", () => {
-					clearTimeout(timeoutId);
+				const onDispose = (): void => {
+					cleanup();
 					reject(new Error("Runtime is disposed while summarizing"));
-				});
+				};
+				const cleanup = (): void => {
+					clearTimeout(timeoutId);
+					offOpsSaved();
+					this.off("dispose", onDispose);
+				};
+				this.once("dispose", onDispose);
 			});
 
 			// Log that there are pending ops while summarizing. This will help us gather data on how often this
 			// happens, whether we attempted to wait for these ops to be acked and what was the result.
 			summaryNumberLogger.sendTelemetryEvent({
 				eventName: "PendingOpsWhileSummarizing",
-				saved: !this.isDirty,
+				saved: !this.isOpDirty,
 				timeout: pendingOpsTimeout,
 				countBefore,
 				countAfter: this.pendingMessagesCount,
@@ -4663,9 +5031,9 @@ export class ContainerRuntime
 	}
 
 	/**
-	 * This helper is called during summarization. If the container is dirty, it will return a failed summarize result
-	 * (IBaseSummarizeResult) unless this is the final summarize attempt, in which case the summary is allowed to
-	 * proceed to make progress in documents where there are consistently pending ops in the summarizer.
+	 * This helper is called during summarization. If there are pending unacknowledged operations, it will
+	 * return a failed summarize result (IBaseSummarizeResult) unless this is the final summarize attempt,
+	 * in which case the summary is allowed to proceed to make progress.
 	 * @param logger - The logger to be used for sending telemetry.
 	 * @param referenceSequenceNumber - The reference sequence number of the summary attempt.
 	 * @param minimumSequenceNumber - The minimum sequence number of the summary attempt.
@@ -4674,13 +5042,13 @@ export class ContainerRuntime
 	 * @returns failed summarize result (IBaseSummarizeResult) if summary should be failed, undefined otherwise.
 	 */
 	private async shouldFailSummaryOnPendingOps(
-		logger: ITelemetryLoggerExt,
+		logger: TelemetryLoggerExt,
 		referenceSequenceNumber: number,
 		minimumSequenceNumber: number,
 		finalAttempt: boolean,
 		beforeSummaryGeneration: boolean,
 	): Promise<IBaseSummarizeResult | undefined> {
-		if (!this.isDirty) {
+		if (!this.isOpDirty) {
 			return;
 		}
 
@@ -4742,15 +5110,71 @@ export class ContainerRuntime
 	 * But those events don't exist so we manually call this wherever we know those changes happen.
 	 */
 	private updateDocumentDirtyState(): void {
-		const dirty: boolean = this.computeCurrentDirtyState();
+		const opDirty = this.computeCurrentOpDirtyState();
+		const opDirtyChanged = this.lastOpDirty !== opDirty;
+		this.lastOpDirty = opDirty;
 
-		if (this.lastEmittedDirty === dirty) {
+		if (!this.emitDirtyDocumentEvent) {
+			this.lastEmittedDirty = opDirty;
 			return;
 		}
 
-		this.lastEmittedDirty = dirty;
-		if (this.emitDirtyDocumentEvent) {
+		if (opDirtyChanged) {
+			// These notifications can synchronously release reconnect waiters and raise "connected",
+			// whose listeners may submit another op and reenter this method. Track the nesting so only
+			// the outermost notification publishes host-facing dirty state.
+			this.pendingOpStateNotificationRunner.run(() => {
+				this.updatePendingOpState?.(opDirty);
+				// Only announce drained ops if that is still true after the callback above, which may
+				// have reentered this method and made the container dirty again.
+				if (!opDirty && this.lastOpDirty === opDirty) {
+					this.internalEvents.emit("opsSaved");
+				}
+			});
+		}
+
+		this.publishDirtyState();
+	}
+
+	/**
+	 * Emit "dirty" or "saved" if host-facing dirty state has changed since the last emit.
+	 *
+	 * @remarks Publication is deferred while a pending-op-state notification is in progress. Such a
+	 * notification can synchronously drive a full connection-state propagation, and publishing from
+	 * inside one lets a listener (e.g. a host calling disconnect() on "saved") reenter that propagation,
+	 * which the interrupted outer frame would then overwrite with its stale state. Nested pending-op-state
+	 * updates still take effect immediately; only the host-facing event is deferred, and the outermost
+	 * frame publishes whatever state is current once nesting unwinds.
+	 */
+	private publishDirtyState(): void {
+		if (this.pendingOpStateNotificationRunner.running) {
+			return;
+		}
+
+		const dirty = this.computeCurrentDirtyState();
+		if (this.lastEmittedDirty !== dirty) {
+			this.lastEmittedDirty = dirty;
 			this.emit(dirty ? "dirty" : "saved");
+		}
+	}
+
+	/**
+	 * Emit "hasStagedChangesChanged" if the current staged-changes state differs from what was last emitted.
+	 * This must be called explicitly at each place staged changes can be added or removed (submit, flush,
+	 * discardChanges, commitChanges) -- unlike {@link ContainerRuntime.updateDocumentDirtyState}, it is not
+	 * safe to call this unconditionally alongside dirty tracking, since most dirty-state transitions (e.g.
+	 * acking ops, reconnecting) can't affect staged changes.
+	 */
+	private updateHasStagedChangesState(): void {
+		const hasStagedChanges: boolean = this.computeCurrentHasStagedChanges();
+
+		if (this.lastEmittedHasStagedChanges === hasStagedChanges) {
+			return;
+		}
+
+		this.lastEmittedHasStagedChanges = hasStagedChanges;
+		if (this.emitDirtyDocumentEvent) {
+			this.emit("hasStagedChangesChanged", hasStagedChanges);
 		}
 	}
 
@@ -4795,6 +5219,52 @@ export class ContainerRuntime
 		metadata?: { localId: string; blobId?: string },
 	): void {
 		this.verifyNotClosed();
+
+		// Nothing should be submitting while we're replaying stashed ops.
+		// The runtime is readonly during the apply window (see
+		// `PendingStateManager._applyLifecycle`), so a compliant DDS skips
+		// submits. If we land here anyway, a DDS bypassed the readonly gate
+		// (e.g. a realize-time write that doesn't consult `readOnly`) and
+		// produced a local op that has no counterpart in the saved-op
+		// replay — we cannot reconcile the mismatch, so fail fatally. We
+		// check here (rather than at flush) because outbox flushes are
+		// deferred and the apply window could close before the offending op
+		// reaches the pending queue.
+		//
+		// Allowlist: `BlobAttach` is a runtime-internal op type that may
+		// legitimately fire during apply — produced by `sharePendingBlobs`,
+		// which is invoked from `loadRuntime2` before `applyStashedOpsAt`
+		// resolves. `IdAllocation` is not in this allowlist because the
+		// assert at 0x9a5 below enforces that it never reaches `submit()`
+		// at all; treating that assert as the single source of truth.
+		//
+		// Always surface the error event to telemetry on a bypass so we can
+		// attribute incidents regardless of the on-switch state. The
+		// `EnableSubmitDuringStashedApplyThrow` config opts in to the
+		// throw + container close; by default we log only, so a first- or
+		// third-party DDS that quietly bypasses the readonly gate in
+		// production is observable without escalating to a fatal close.
+		if (
+			this.pendingStateManager.isApplyingStashedOps &&
+			containerRuntimeMessage.type !== ContainerMessageType.BlobAttach
+		) {
+			const error = new UsageError("Local op submitted during stashed-op apply window", {
+				messageType: containerRuntimeMessage.type,
+			});
+			this.mc.logger.sendErrorEvent({ eventName: "SubmitDuringStashedOpApply" }, error);
+			if (
+				this.mc.config.getBoolean(
+					"Fluid.ContainerRuntime.EnableSubmitDuringStashedApplyThrow",
+				) === true
+			) {
+				// Close the container before throwing so the "throw + close"
+				// contract is enforced by this code path rather than by
+				// whichever caller happens to wrap the throw in `.catch(closeFn)`.
+				// `closeFn` is idempotent; a caller that also closes won't double-close.
+				this.closeFn(error);
+				throw error;
+			}
+		}
 
 		// There should be no ops in detached container state!
 		assert(
@@ -4883,6 +5353,7 @@ export class ContainerRuntime
 		}
 
 		this.updateDocumentDirtyState();
+		this.updateHasStagedChangesState();
 	}
 
 	private scheduleFlush(): void {
@@ -5184,7 +5655,7 @@ export class ContainerRuntime
 	private async fetchLatestSnapshotAndMaybeClose(
 		targetRefSeq: number,
 		targetAckHandle: string,
-		logger: ITelemetryLoggerExt,
+		logger: TelemetryLoggerExt,
 	): Promise<void> {
 		const fetchedSnapshotRefSeq = await PerformanceEvent.timedExecAsync(
 			logger,

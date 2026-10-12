@@ -1,0 +1,21 @@
+{
+	"extends": [
+		"../../../../../common/build/build-common/tsconfig.node20.json",
+		"../../../../../common/build/build-common/tsconfig.test.json",
+	],
+	"compilerOptions": {
+		"rootDir": "./",
+		"outDir": "../../lib/test",
+		"types": [],
+		"noImplicitAny": true,
+		"noUnusedLocals": true,
+		"noImplicitOverride": true,
+		"exactOptionalPropertyTypes": true,
+	},
+	"include": ["./**/*"],
+	"references": [
+		{
+			"path": "../..",
+		},
+	],
+}

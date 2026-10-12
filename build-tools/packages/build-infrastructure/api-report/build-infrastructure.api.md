@@ -67,7 +67,10 @@ export function getChangedSinceRef<P extends IPackage>(buildProject: IBuildProje
 export function getFiles(git: SimpleGit, directory: string): Promise<string[]>;
 
 // @public
-export function getMergeBaseRemote(git: SimpleGit, branch: string, remote?: string, localRef?: string): Promise<string>;
+export function getMergeBaseRemote(git: SimpleGit, branch: string, remote?: string, localRef?: string, onStatus?: (message: string) => void): Promise<string>;
+
+// @public
+export function getPackageDirs(git: SimpleGit, ref?: string): Promise<Set<string>>;
 
 // @public
 export function getRemote(git: SimpleGit, partialUrl: string | undefined): Promise<string | undefined>;
@@ -149,6 +152,9 @@ export interface IReleaseGroup extends Reloadable {
 }
 
 // @public
+export function isFileInPackageDir(file: string, packageDirs: ReadonlySet<string>): boolean;
+
+// @public
 export function isIPackage(pkg: any): pkg is IPackage;
 
 // @public
@@ -165,6 +171,9 @@ export interface IWorkspace extends Installable, Reloadable {
     // (undocumented)
     toString(): string;
 }
+
+// @public
+export function listPackageJsonPaths(git: SimpleGit, ref?: string): Promise<string[]>;
 
 // @public
 export function loadBuildProject<P extends IPackage>(searchPath: string, upstreamRemotePartialUrl?: string): IBuildProject<P>;
@@ -185,24 +194,34 @@ export abstract class PackageBase<J extends PackageJson = PackageJson, TAddProps
     isWorkspaceRoot: boolean,
     releaseGroup: ReleaseGroupName,
     isReleaseGroupRoot: boolean, additionalProperties?: TAddProps);
+    // (undocumented)
     checkInstall(): Promise<true | string[]>;
+    // (undocumented)
     get combinedDependencies(): Generator<PackageDependency, void>;
+    // (undocumented)
     get directory(): string;
+    // (undocumented)
     getScript(name: string): string | undefined;
     install(updateLockfile: boolean): Promise<boolean>;
     isReleaseGroupRoot: boolean;
     readonly isWorkspaceRoot: boolean;
+    // (undocumented)
     get name(): PackageName;
+    // (undocumented)
     get nameColored(): string;
+    // (undocumented)
     get packageJson(): J;
     readonly packageJsonFilePath: string;
     readonly packageManager: IPackageManager;
+    // (undocumented)
     get private(): boolean;
     readonly releaseGroup: ReleaseGroupName;
     reload(): void;
+    // (undocumented)
     savePackageJson(): Promise<void>;
     // (undocumented)
     toString(): string;
+    // (undocumented)
     get version(): string;
     readonly workspace: IWorkspace;
 }

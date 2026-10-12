@@ -67,7 +67,7 @@ import type {
 	IFluidDataStoreFactory,
 	PackagePath,
 	IRuntimeStorageService,
-	MinimumVersionForCollab,
+	OldestSupportedClientVersion,
 	ContainerExtensionId,
 	ContainerExtensionExpectations,
 } from "@fluidframework/runtime-definitions/internal";
@@ -75,6 +75,7 @@ import { channelsTreeName } from "@fluidframework/runtime-definitions/internal";
 import {
 	addBlobToSummary,
 	isSnapshotFetchRequiredForLoadingGroupId,
+	dataStoreLoadTelemetryProps,
 } from "@fluidframework/runtime-utils/internal";
 import {
 	DataProcessingError,
@@ -354,7 +355,7 @@ export abstract class FluidDataStoreContext
 	/**
 	 * {@inheritdoc IFluidDataStoreContext.minVersionForCollab}
 	 */
-	public readonly minVersionForCollab: MinimumVersionForCollab;
+	public readonly minVersionForCollab: OldestSupportedClientVersion;
 
 	private baseSnapshotSequenceNumber: number | undefined;
 
@@ -588,10 +589,7 @@ export abstract class FluidDataStoreContext
 					"realizeFluidDataStoreContext",
 				);
 				errorWrapped.addTelemetryProperties(
-					tagCodeArtifacts({
-						fullPackageName: this.pkg?.join("/"),
-						fluidDataStoreId: this.id,
-					}),
+					dataStoreLoadTelemetryProps({ id: this.id, packagePath: this.pkg ?? [] }),
 				);
 				this.mc.logger.sendErrorEvent({ eventName: "RealizeError" }, errorWrapped);
 				throw errorWrapped;
@@ -1368,16 +1366,10 @@ export class RemoteFluidDataStoreContext extends FluidDataStoreContext {
 		return this.initialSnapshotDetailsP;
 	}
 
-	/**
-	 * {@inheritDoc FluidDataStoreContext.getAttachSummary}
-	 */
 	public getAttachSummary(): ISummaryTreeWithStats {
 		throw new Error("Cannot attach remote store");
 	}
 
-	/**
-	 * {@inheritDoc FluidDataStoreContext.getAttachGCData}
-	 */
 	public getAttachGCData(telemetryContext?: ITelemetryContext): IGarbageCollectionData {
 		throw new Error("Cannot attach remote store");
 	}
@@ -1451,9 +1443,6 @@ export class LocalFluidDataStoreContextBase extends FluidDataStoreContext {
 		}
 	}
 
-	/**
-	 * {@inheritDoc FluidDataStoreContext.getAttachSummary}
-	 */
 	public getAttachSummary(telemetryContext?: ITelemetryContext): ISummaryTreeWithStats {
 		assert(
 			this.channel !== undefined,
@@ -1481,9 +1470,6 @@ export class LocalFluidDataStoreContextBase extends FluidDataStoreContext {
 		return attachSummary;
 	}
 
-	/**
-	 * {@inheritDoc FluidDataStoreContext.getAttachGCData}
-	 */
 	public getAttachGCData(telemetryContext?: ITelemetryContext): IGarbageCollectionData {
 		assert(
 			this.channel !== undefined,
